@@ -1,0 +1,9 @@
+{
+  "name": "axlum-build",
+  "version-string": "0.1.0",
+  "builtin-baseline": "301856f5f2824f788a3ffa6332293861cccd23b4",
+  "dependencies": [
+    "lua", "sol2", "cli11", "fmt", "spdlog", "nlohmann-json", "tomlplusplus",
+    "libgit2", "curl", "xxhash", "zstd", "libarchive", "openssl"
+  ]
+}

@@ -1,0 +1,16 @@
+/build/
+/build-*/
+/.axlum/
+/vcpkg_installed/
+**/.axlum/
+**/.rhodium/
+**/.tpkg/
+**/bin/
+**/obj/
+**/__pycache__/
+*.pyc
+.vs/
+.idea/
+.cache
+.vscode
+.ccgui

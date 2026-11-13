@@ -1,0 +1,30 @@
+# @Author: khfahqp khfahqp@gmail.com
+# @LastEditors: khfahqp khfahqp@gmail.com
+# Copyright (c) 2026 by AxlumLab, All Rights Reserved.
+
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 160
+BreakBeforeBraces: Allman
+NamespaceIndentation: All
+AccessModifierOffset: -2
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: LogicalBlock
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: false
+BinPackParameters: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Empty
+SeparateDefinitionBlocks: Always
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+PointerAlignment: Left
+ReferenceAlignment: Left
+FixNamespaceComments: true
+InsertNewlineAtEOF: true

@@ -1,0 +1,26 @@
+# @Author: khfahqp khfahqp@gmail.com
+# @LastEditors: khfahqp khfahqp@gmail.com
+# Copyright (c) 2026 by AxlumLab, All Rights Reserved.
+
+* text=auto
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.cs text eol=lf
+*.py text eol=lf
+*.lua text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.csproj text eol=lf
+*.vcxproj text eol=lf
+*.rc text eol=lf
+*.def text eol=lf
+*.ico binary
+*.png binary
+.clang-format text eol=lf
+.clang-tidy text eol=lf
+.editorconfig text eol=lf
+.gitattributes text eol=lf
