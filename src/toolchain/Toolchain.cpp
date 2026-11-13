@@ -23,6 +23,16 @@ namespace axlum
 {
     namespace
     {
+        std::string fileTimestamp(const fs::path& path)
+        {
+            // libc++ can represent file-clock ticks with a 128-bit integer.
+            // Split before formatting to preserve precision without narrowing it.
+            const auto ticks = fs::last_write_time(path).time_since_epoch();
+            const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(ticks);
+            const auto fraction = std::chrono::duration_cast<std::chrono::nanoseconds>(ticks - seconds);
+            return std::to_string(seconds.count()) + ":" + std::to_string(fraction.count());
+        }
+
         std::string getEnv(const char* key)
         {
             const char* value = std::getenv(key);
@@ -478,7 +488,7 @@ namespace axlum
         static std::mutex s_mutex;
         static std::map<std::string, std::string> s_cache;
         std::lock_guard lock(s_mutex);
-        const auto key = tc.m_cppCompiler + tc.m_compilerVersion + std::to_string(fs::last_write_time(tc.m_cppCompiler).time_since_epoch().count());
+        const auto key = tc.m_cppCompiler + tc.m_compilerVersion + fileTimestamp(tc.m_cppCompiler);
         if (s_cache.contains(key))
             return s_cache.at(key);
         const auto base = fs::temp_directory_path();
@@ -526,7 +536,7 @@ namespace axlum
         {
             data += "\n" + path;
             if (fs::is_regular_file(path))
-                data += std::to_string(fs::file_size(path)) + std::to_string(fs::last_write_time(path).time_since_epoch().count());
+                data += std::to_string(fs::file_size(path)) + fileTimestamp(path);
         }
         // Detect servicing updates which keep compiler/SDK installation paths and version IDs.
         for (const auto& directories : {tc.m_systemIncludes, tc.m_systemLibraries})
@@ -548,7 +558,7 @@ namespace axlum
                     const auto file = directory / name;
                     if (fs::is_regular_file(file))
                         data +=
-                            file.generic_string() + std::to_string(fs::file_size(file)) + std::to_string(fs::last_write_time(file).time_since_epoch().count());
+                            file.generic_string() + std::to_string(fs::file_size(file)) + fileTimestamp(file);
                 }
             }
         for (const auto& [key, value] : tc.m_environment)
