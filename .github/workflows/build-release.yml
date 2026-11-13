@@ -38,6 +38,7 @@ jobs:
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
       VCPKG_MAX_CONCURRENCY: '3'
+      VCPKG_DOWNLOADS: ${{ github.workspace }}/.vcpkg-downloads
     steps:
       - uses: actions/checkout@v6
         with:
@@ -51,8 +52,10 @@ jobs:
           persist-credentials: false
       - uses: actions/cache@v4
         with:
-          path: .vcpkg-cache
-          key: vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}-301856f5
+          path: |
+            .vcpkg-cache
+            .vcpkg-downloads
+          key: vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}-301856f5-downloads1
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
         with:
@@ -72,9 +75,13 @@ jobs:
         env:
           RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: python .github/scripts/Package.py --check-version "$env:RELEASE_TAG"
+      # Lua's HTTPS endpoint can fail TLS negotiation on hosted runners.
+      # Populate vcpkg's download cache first, preserving the port's SHA-512.
+      - name: Prepare verified source downloads
+        run: python .github/scripts/PrepareDownloads.py
       - name: Configure
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAXLUM_BUILD_TESTS=ON -DBUILD_SHARED_LIBS=OFF "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAXLUM_BUILD_TESTS=ON -DAXLUM_STATIC_RELEASE=ON "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --target axlum-build axlum-unit-tests axlum-native-plan-tests --parallel 3
@@ -87,6 +94,8 @@ jobs:
           if ($IsWindows) { & ./stage/bin/axlum-build.exe --version }
           else { & ./stage/bin/axlum-build --version }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify static linkage
+        run: python .github/scripts/VerifyLinkage.py --platform '${{ matrix.platform }}'
       - name: Package
         env:
           RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}

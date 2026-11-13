@@ -4,6 +4,12 @@
 
 cmake_minimum_required(VERSION 3.25)
 
+option(AXLUM_STATIC_RELEASE "Statically link release dependencies and supported platform runtimes" OFF)
+if(AXLUM_STATIC_RELEASE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static dependencies" FORCE)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # Build configuration
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR "Use an out-of-source build: cmake -S . -B build")
@@ -100,6 +106,15 @@ target_link_libraries(axlum-build-core PRIVATE Rhodium::Core OpenSSL::Crypto)
 add_executable(axlum-build src/cli/Application.cpp src/cli/Main.cpp)
 axlumConfigureTarget(axlum-build)
 target_link_libraries(axlum-build PRIVATE AxlumBuild::Core CLI11::CLI11)
+if(AXLUM_STATIC_RELEASE)
+    get_target_property(rhodiumLibraryType Rhodium::Core TYPE)
+    if(NOT rhodiumLibraryType STREQUAL "STATIC_LIBRARY")
+        message(FATAL_ERROR "AXLUM_STATIC_RELEASE requires a static Rhodium::Core")
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(axlum-build PRIVATE -static)
+    endif()
+endif()
 
 # Validation
 function(axlumAddPythonTest name script)

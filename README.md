@@ -6,6 +6,11 @@ Version tags such as `v0.1.0` publish release archives and SHA-256 checksums aft
 all builds and minimal checks pass. Release tags must match the CMake and vcpkg
 versions; each archive records the exact application and Rhodium commits.
 
+Release builds enable `AXLUM_STATIC_RELEASE`: Windows uses the static CRT and
+dependencies, Linux requires a static ELF without an interpreter or DT_NEEDED,
+and macOS links dependencies statically while retaining OS-provided libraries.
+CI checks the installed binary before packaging and includes `linkage.json`.
+
 See [CLI commands](docs/CLI.md) for native/.NET publish and install, `run`, detailed
 clean modes, CMake-style invocation, target inspection and Rhodium SDK diagnostics.
 

@@ -16,5 +16,6 @@
 .ccgui
 /.vcpkg/
 /.vcpkg-cache/
+/.vcpkg-downloads/
 /stage/
 /dist/
