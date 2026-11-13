@@ -68,6 +68,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Bootstrap vcpkg
         run: |
+          New-Item -ItemType Directory -Force -Path "$env:VCPKG_DOWNLOADS", "$env:GITHUB_WORKSPACE/.vcpkg-cache" | Out-Null
           if ($IsWindows) { & ./.vcpkg/bootstrap-vcpkg.bat -disableMetrics }
           else { & ./.vcpkg/bootstrap-vcpkg.sh -disableMetrics }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -75,8 +76,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: python .github/scripts/Package.py --check-version "$env:RELEASE_TAG"
-      # Lua's HTTPS endpoint can fail TLS negotiation on hosted runners.
-      # Populate vcpkg's download cache first, preserving the port's SHA-512.
+      # Use the vendored upstream archive, verified against the vcpkg port.
       - name: Prepare verified source downloads
         run: python .github/scripts/PrepareDownloads.py
       - name: Configure

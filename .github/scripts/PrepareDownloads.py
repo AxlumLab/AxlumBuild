@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import urllib.error
 import urllib.request
 
@@ -39,6 +40,15 @@ def main():
         and hashlib.sha512(destination.read_bytes()).hexdigest() == expected
     ):
         print(f"Verified cached {destination.name}")
+        return
+    bundled = Path(__file__).resolve().parent.parent / "distfiles" / destination.name
+    if bundled.is_file():
+        if hashlib.sha512(bundled.read_bytes()).hexdigest() != expected:
+            raise SystemExit(f"SHA-512 mismatch for bundled {bundled.name}")
+        temporary = destination.with_suffix(".tmp")
+        shutil.copyfile(bundled, temporary)
+        temporary.replace(destination)
+        print(f"Verified bundled {destination.name}")
         return
     for scheme in ("https", "http"):
         url = f"{scheme}://www.lua.org/ftp/{destination.name}"
