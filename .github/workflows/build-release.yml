@@ -1,0 +1,127 @@
+# @Author: khfahqp khfahqp@gmail.com
+# @LastEditors: khfahqp khfahqp@gmail.com
+# Copyright (c) 2026 by AxlumLab, All Rights Reserved.
+
+name: Build and release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-2022, platform: windows-x64, triplet: x64-windows-static}
+          - {runner: ubuntu-24.04, platform: linux-x64, triplet: x64-linux}
+          - {runner: macos-15-intel, platform: macos-x64, triplet: x64-osx}
+          - {runner: macos-15, platform: macos-arm64, triplet: arm64-osx}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+      VCPKG_MAX_CONCURRENCY: '3'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: microsoft/vcpkg
+          ref: 301856f5f2824f788a3ffa6332293861cccd23b4
+          path: .vcpkg
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: .vcpkg-cache
+          key: vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}-301856f5
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+      - name: Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config autoconf automake libtool libltdl-dev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bootstrap vcpkg
+        run: |
+          if ($IsWindows) { & ./.vcpkg/bootstrap-vcpkg.bat -disableMetrics }
+          else { & ./.vcpkg/bootstrap-vcpkg.sh -disableMetrics }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: python .github/scripts/Package.py --check-version "$env:RELEASE_TAG"
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAXLUM_BUILD_TESTS=ON -DBUILD_SHARED_LIBS=OFF "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build
+        run: cmake --build build --target axlum-build axlum-unit-tests axlum-native-plan-tests --parallel 3
+      - name: Minimal checks
+        run: |
+          ctest --test-dir build -R '^(unit|native-plan)$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install build --prefix stage --component Runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($IsWindows) { & ./stage/bin/axlum-build.exe --version }
+          else { & ./stage/bin/axlum-build --version }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: python .github/scripts/Package.py --platform '${{ matrix.platform }}' --tag "$env:RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axlum-build-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish verified assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.zip *.tar.gz > SHA256SUMS
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./* --clobber
+          else
+            gh release create "$RELEASE_TAG" ./* --verify-tag --title "AxlumBuild $RELEASE_TAG" --generate-notes
+          fi

@@ -1,5 +1,11 @@
 # AxlumBuild
 
+[Build and release](https://github.com/AxlumLab/AxlumBuild/actions/workflows/build-release.yml)
+builds Windows x64, Linux x64 and macOS x64/ARM64 on pushes and pull requests.
+Version tags such as `v0.1.0` publish release archives and SHA-256 checksums after
+all builds and minimal checks pass. Release tags must match the CMake and vcpkg
+versions; each archive records the exact application and Rhodium commits.
+
 See [CLI commands](docs/CLI.md) for native/.NET publish and install, `run`, detailed
 clean modes, CMake-style invocation, target inspection and Rhodium SDK diagnostics.
 

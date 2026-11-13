@@ -14,3 +14,7 @@
 .cache
 .vscode
 .ccgui
+/.vcpkg/
+/.vcpkg-cache/
+/stage/
+/dist/
