@@ -1499,7 +1499,7 @@ namespace axlum
                 auto read = [&](const char* key)
                 {
                     sol::object value = options[key];
-                    return value.get_type() == sol::type::nil ? std::string{} : readText(value);
+                    return value.get_type() == sol::type::lua_nil ? std::string{} : readText(value);
                 };
                 NuGetReference reference{name, read("version"), read("private_assets"), read("include_assets"), read("exclude_assets")};
                 if (name.empty() || reference.m_version.empty())
@@ -1657,15 +1657,15 @@ namespace axlum
                     throw std::runtime_error("unknown build action field: " + field);
             }
             sol::object tool = options["tool"], args = options["args"], inputs = options["inputs"], outputs = options["outputs"], depfile = options["depfile"];
-            if (tool.valid() && tool.get_type() != sol::type::nil)
+            if (tool.valid() && tool.get_type() != sol::type::lua_nil)
                 action.m_tool = readText(tool);
-            if (args.valid() && args.get_type() != sol::type::nil)
+            if (args.valid() && args.get_type() != sol::type::lua_nil)
                 action.m_args = readList(args);
-            if (inputs.valid() && inputs.get_type() != sol::type::nil)
+            if (inputs.valid() && inputs.get_type() != sol::type::lua_nil)
                 action.m_inputs = readList(inputs);
-            if (outputs.valid() && outputs.get_type() != sol::type::nil)
+            if (outputs.valid() && outputs.get_type() != sol::type::lua_nil)
                 action.m_outputs = readList(outputs);
-            if (depfile.valid() && depfile.get_type() != sol::type::nil)
+            if (depfile.valid() && depfile.get_type() != sol::type::lua_nil)
                 action.m_depfile = readText(depfile);
             if (name.empty() || action.m_tool.empty() || action.m_outputs.empty())
                 throw std::runtime_error("pre/post-build actions require name, tool and declared outputs");
