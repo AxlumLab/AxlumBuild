@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+ * @Author: khfahqp khfahqp@gmail.com
+ * @LastEditors: khfahqp khfahqp@gmail.com
+ * Copyright (c) 2026 by AxlumLab, All Rights Reserved.
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<ItemGroup Label="ProjectConfigurations">
+<ProjectConfiguration Include="Development|x64"><Configuration>Development</Configuration><Platform>x64</Platform></ProjectConfiguration>
+<ProjectConfiguration Include="Shipping|x64"><Configuration>Shipping</Configuration><Platform>x64</Platform></ProjectConfiguration>
+</ItemGroup>
+<PropertyGroup Label="Globals"><ProjectGuid>{A84363D7-2861-42F5-A1A1-C9EF0656BA16}</ProjectGuid><WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion></PropertyGroup>
+<Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props"/>
+<PropertyGroup Label="Configuration"><ConfigurationType>StaticLibrary</ConfigurationType><PlatformToolset>v143</PlatformToolset></PropertyGroup>
+<Import Project="$(VCTargetsPath)\Microsoft.Cpp.props"/>
+<PropertyGroup><OutDir>$(MSBuildThisFileDirectory)original-bin\</OutDir><IntDir>$(MSBuildThisFileDirectory)original-obj\</IntDir></PropertyGroup>
+<ItemGroup><ClCompile Include="Math.cpp"/><ClInclude Include="Math.hpp"/></ItemGroup>
+<Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets"/>
+</Project>

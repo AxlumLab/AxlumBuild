@@ -1,0 +1,19 @@
+<!--
+ * @Author: khfahqp khfahqp@gmail.com
+ * @LastEditors: khfahqp khfahqp@gmail.com
+ * Copyright (c) 2026 by AxlumLab, All Rights Reserved.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <PackageId>Axlum.FixtureGenerator</PackageId>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CodeAnalysis"><HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.dll</HintPath><Private>false</Private></Reference>
+    <None Include="$(OutputPath)ValueGenerator.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+</Project>

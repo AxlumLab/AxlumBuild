@@ -1,0 +1,13 @@
+<!--
+ * @Author: khfahqp khfahqp@gmail.com
+ * @LastEditors: khfahqp khfahqp@gmail.com
+ * Copyright (c) 2026 by AxlumLab, All Rights Reserved.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

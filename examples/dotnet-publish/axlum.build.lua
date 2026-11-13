@@ -1,0 +1,40 @@
+-- @Author: khfahqp khfahqp@gmail.com
+-- @LastEditors: khfahqp khfahqp@gmail.com
+-- Copyright (c) 2026 by AxlumLab, All Rights Reserved.
+
+workspace("DotnetPublish")
+    configuration("Debug", "Release")
+
+target("Vendor")
+    kind("SharedLibrary")
+    files("native/Vendor.cpp")
+
+target("AotHello")
+    kind("CSharpConsole")
+    framework("net10.0")
+    files("src/Program.cs")
+    nullable("Enable")
+    csdefines("STANDARD_DOTNET_AOT")
+    publishaot(true)
+    selfcontained(true)
+
+target("AotLibrary")
+    kind("CSharpLibrary")
+    framework("net10.0")
+    files("src/Exports.cs")
+    allowunsafe(true)
+    nullable("Enable")
+    publishaot(true)
+    native_library("Shared")
+    native_exports("axlum_add")
+    private_deps("Vendor")
+    filter("system:windows")
+        runtimefiles("@build/bin/Vendor.dll")
+        native_dependencies("Vendor.dll")
+    filter("system:linux")
+        runtimefiles("@build/lib/libVendor.so")
+        native_dependencies("libVendor.so")
+    filter("system:macos")
+        runtimefiles("@build/lib/libVendor.dylib")
+        native_dependencies("libVendor.dylib")
+    filter({})
