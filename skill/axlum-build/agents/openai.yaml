@@ -1,0 +1,4 @@
+interface:
+  display_name: "AxlumBuild"
+  short_description: "Develop AxlumBuild and its embedded Rhodium bridge"
+  default_prompt: "Use $axlum-build to handle this build-system issue, checking the linked Rhodium revision where relevant."
