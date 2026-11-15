@@ -10,8 +10,8 @@ Three compact status-bar shortcuts build, run and debug the selected targets.
 Hover to see the target and configuration. While a build/configure operation runs, Build becomes
 Cancel and Run/Debug are disabled. Running programs do not lock the build controls. The shortcuts are hidden outside Axlum workspaces.
 
-Selections persist
-per workspace/configuration. Building uses the build target; running/debugging
+The initial build target is `all`; the initial run target is the first application
+(or the explicitly declared startup target). Selections persist per workspace/configuration. Building uses the build target; running/debugging
 builds the run target and its dependencies, regardless of the build selection.
 Failed or cancelled builds never launch a stale executable. The cancel button
 stops only the current build/configure task. Hidden/unavailable targets are excluded from the selectors.

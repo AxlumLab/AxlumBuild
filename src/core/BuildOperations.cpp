@@ -609,16 +609,26 @@ namespace axlum
                 throw std::runtime_error("configuration cache cleaning is workspace-wide; omit --target");
             for (const auto& name :
                  {"build.ninja",
+                  "generators.ninja",
+                  "host-generators.ninja",
+                  "axlum.run-targets.json",
+                  "axlum.configure-inputs.json",
+                  "axlum.dynamic.json",
+                  "axlum.option-schema.json",
                   "compile_commands.json",
-                  "axlum.environment.json",
                   "axlum.packages",
-                  "axlum.outputs",
+                  "axlum.package-inputs.json",
                   "axlum.target-selection.json",
                   "axlum.artifacts.json",
-                  ".ninja_log",
-                  ".ninja_deps",
                   "axlum.state"})
                 removeOwned(directory / name, directory, request.m_dryRun);
+            for (const auto& name : {"generators.ninja", "axlum.dynamic.json", "axlum.packages", "axlum.package-inputs.json"})
+                removeOwned(directory / "host" / name, directory, request.m_dryRun);
+            // Configuration cleanup keeps valid object dependency history and the
+            // ownership ledger so reconfigure can reuse outputs and remove orphans.
+            if (request.m_mode == "all")
+                for (const auto& name : {".ninja_log", ".ninja_deps", "axlum.outputs", "axlum.environment.json", "host/.ninja_log", "host/.ninja_deps"})
+                    removeOwned(directory / name, directory, request.m_dryRun);
         }
         return 0;
     }

@@ -15,6 +15,8 @@ with tempfile.TemporaryDirectory(prefix='axlum discovery ') as tmp:
     root=Path(tmp); source=root/'source'; build=root/'build'
     (source/'src').mkdir(parents=True)
     (source/'src/ignored.cpp').write_text('#error excluded file')
+    (source/'src/build/nested').mkdir(parents=True)
+    (source/'src/build/nested/hidden.cpp').write_text('#error build directory must be excluded')
     program=r'''#include <iostream>
 #include <string>
 #include <cstdlib>
@@ -33,6 +35,8 @@ int main(int argc,char**argv) {
 '''
     (source/'src/main.cpp').write_text(program)
     manifest='''workspace("Convenience")
+assert(#matchfiles("src/build/nested/*.cpp")==0)
+assert(#matchfiles("absent/nested/*.cpp")==0)
 local sources=matchfiles("src/**/*.cpp", "**/ignored.cpp")
 assert(#sources==1 and sources[1]=="src/main.cpp")
 assert(#list.unique(list.concat({"A"},{"A","B"}))==2)

@@ -210,14 +210,42 @@ namespace axlum
                     if (fs::path(pattern).is_absolute() || pattern.starts_with("@build/"))
                         throw std::runtime_error("file globs must be relative to the workspace: " + pattern);
                     const auto matcher = glob(pattern);
-                    for (auto it = fs::recursive_directory_iterator(root); it != fs::recursive_directory_iterator(); ++it)
+                    auto excluded = [&](const fs::path& directory)
+                    {
+                        const auto name = directory.filename().string();
+                        return name == ".git" || name == ".axlum" || name == ".cache" || name == ".rhodium" || name == ".tpkg" || name == "build" ||
+                               name == "obj" || name == "bin" || (!buildDirectory.empty() && FileSystem::isWithin(directory, buildDirectory)) ||
+                               fs::is_regular_file(directory / "axlum.state") || fs::is_regular_file(directory / "CMakeCache.txt");
+                    };
+                    // A literal directory prefix cannot match files elsewhere in
+                    // the workspace. Avoid a full tree walk for every target glob.
+                    auto scanRoot = root;
+                    bool skip = false;
+                    const auto slash = pattern.rfind('/', pattern.find_first_of("*?"));
+                    if (slash != std::string::npos)
+                    {
+                        const auto prefix = fs::path(pattern.substr(0, slash));
+                        bool parentTraversal = false;
+                        for (const auto& part : prefix)
+                            parentTraversal |= part == "..";
+                        if (!parentTraversal)
+                            for (const auto& part : prefix)
+                            {
+                                scanRoot /= part;
+                                if (excluded(scanRoot))
+                                {
+                                    skip = true;
+                                    break;
+                                }
+                            }
+                    }
+                    if (skip || !fs::is_directory(scanRoot))
+                        continue;
+                    for (auto it = fs::recursive_directory_iterator(scanRoot); it != fs::recursive_directory_iterator(); ++it)
                     {
                         if (it->is_directory())
                         {
-                            const auto name = it->path().filename().string();
-                            if (name == ".git" || name == ".axlum" || name == ".cache" || name == ".rhodium" || name == ".tpkg" || name == "build" ||
-                                name == "obj" || name == "bin" || (!buildDirectory.empty() && FileSystem::isWithin(it->path(), buildDirectory)) ||
-                                fs::is_regular_file(it->path() / "axlum.state") || fs::is_regular_file(it->path() / "CMakeCache.txt"))
+                            if (excluded(it->path()))
                                 it.disable_recursion_pending();
                         }
                         else if (it->is_regular_file())
@@ -1808,18 +1836,28 @@ namespace axlum
             }
         );
         const auto optionValues = DslFeatures::readOptions(buildDirectory);
-        lua.set_function("matchfiles", [&](sol::object patterns, sol::optional<sol::object> exclusions) {
-            auto matches = expandFiles(ws.m_root, readList(patterns), buildDirectory);
-            if (exclusions && exclusions->get_type() != sol::type::lua_nil)
-                for (auto pattern : readList(*exclusions))
-                {
-                    std::replace(pattern.begin(), pattern.end(), '\\', '/');
-                    const auto matcher = glob(pattern);
-                    std::erase_if(matches, [&](const auto& file) { return std::regex_match(file, matcher); });
-                }
-            std::sort(matches.begin(), matches.end());
-            return sol::as_table(matches);
-        });
+        lua.set_function(
+            "matchfiles",
+            [&](sol::object patterns, sol::optional<sol::object> exclusions)
+            {
+                auto matches = expandFiles(ws.m_root, readList(patterns), buildDirectory);
+                if (exclusions && exclusions->get_type() != sol::type::lua_nil)
+                    for (auto pattern : readList(*exclusions))
+                    {
+                        std::replace(pattern.begin(), pattern.end(), '\\', '/');
+                        const auto matcher = glob(pattern);
+                        std::erase_if(
+                            matches,
+                            [&](const auto& file)
+                            {
+                                return std::regex_match(file, matcher);
+                            }
+                        );
+                    }
+                std::sort(matches.begin(), matches.end());
+                return sol::as_table(matches);
+            }
+        );
         lua.set_function(
             "__axlum_feature",
             [&](const std::string& name, sol::object object) -> sol::object

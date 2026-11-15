@@ -66,11 +66,33 @@ namespace axlum
             return values;
         }
 
+        bool ignoredConfigureDirectory(const fs::path& path, const fs::path& build)
+        {
+            const auto name = path.filename().string();
+            return (name.starts_with(".") && name != ".rhodium") || name == "build" || name == "obj" || name == "bin" || FileSystem::isWithin(path, build) ||
+                   fs::is_regular_file(path / "axlum.state") || fs::is_regular_file(path / "CMakeCache.txt");
+        }
+
+        Json directoryMembers(const fs::path& directory, const fs::path& build)
+        {
+            if (!fs::is_directory(directory))
+                return nullptr;
+            std::vector<std::string> members;
+            for (const auto& entry : fs::directory_iterator(directory))
+            {
+                if (entry.is_directory() && ignoredConfigureDirectory(entry.path(), build))
+                    continue;
+                members.push_back(entry.path().filename().generic_string() + (entry.is_directory() ? "/" : ""));
+            }
+            std::sort(members.begin(), members.end());
+            return members;
+        }
+
         // Record directory membership as well as configuration files. A normal source
         // edit leaves directory mtimes unchanged; additions/removals invalidate globs.
         void saveConfigureInputs(const Workspace& ws, const fs::path& build, const fs::path& self)
         {
-            Json files = Json::object();
+            Json files = Json::object(), directories = Json::object();
             auto record = [&](const fs::path& path)
             {
                 files[fs::absolute(path).lexically_normal().generic_string()] = fileVersion(path);
@@ -82,18 +104,16 @@ namespace axlum
                     record(root);
                     return;
                 }
-                record(root);
+                directories[fs::absolute(root).lexically_normal().generic_string()] = directoryMembers(root, build);
                 for (auto it = fs::recursive_directory_iterator(root); it != fs::recursive_directory_iterator(); ++it)
                 {
                     const auto path = it->path();
                     if (it->is_directory())
                     {
-                        const auto name = path.filename().string();
-                        if ((name.starts_with(".") && name != ".rhodium") || name == "build" || name == "obj" || name == "bin" || FileSystem::isWithin(path, build) ||
-                            fs::is_regular_file(path / "axlum.state") || fs::is_regular_file(path / "CMakeCache.txt"))
+                        if (ignoredConfigureDirectory(path, build))
                             it.disable_recursion_pending();
                         else
-                            record(path);
+                            directories[fs::absolute(path).lexically_normal().generic_string()] = directoryMembers(path, build);
                     }
                     else if (it->is_regular_file())
                     {
@@ -110,7 +130,9 @@ namespace axlum
             record(ws.m_manifest);
             record(self);
             record(build / "axlum.options.json");
-            FileSystem::writeIfChanged(build / "axlum.configure-inputs.json", Json{{"files", files}, {"environment", configureEnvironment()}}.dump());
+            FileSystem::writeIfChanged(
+                build / "axlum.configure-inputs.json", Json{{"files", files}, {"directories", directories}, {"environment", configureEnvironment()}}.dump()
+            );
         }
 
         bool configureInputsChanged(const fs::path& build)
@@ -119,60 +141,95 @@ namespace axlum
             if (!fs::is_regular_file(file))
                 return true;
             const auto saved = Json::parse(FileSystem::readAll(file));
-            if (saved.at("environment") != configureEnvironment())
+            if (!saved.contains("directories") || saved.at("environment") != configureEnvironment())
                 return true;
+            for (const auto& [path, members] : saved.at("directories").items())
+                if (directoryMembers(path, build) != members)
+                    return true;
             for (const auto& [path, version] : saved.at("files").items())
                 if (fileVersion(path) != version)
                     return true;
             return false;
         }
 
-        // Ninja can check the cached generator graph without evaluating the DSL.
-        // The CLI passes its requested roots; direct Ninja conservatively checks all.
-        bool prepareDynamicSources(const fs::path& build, const std::string& ninja)
+        void saveDynamicSources(const Workspace& ws, const BuildGraph& graph, const fs::path& build, const std::vector<std::string>& hostRoots = {})
+        {
+            Json manifests = Json::object();
+            for (const auto& target : ws.m_targets)
+                if (target.m_features.contains("outputmanifest"))
+                    for (const auto& value : target.m_features.at("outputmanifest"))
+                    {
+                        auto path = value.get<std::string>();
+                        if (path.starts_with("@build/"))
+                            path.erase(0, 7);
+                        const auto file = fs::absolute(build / path).lexically_normal();
+                        manifests[target.m_name][file.generic_string()] = fs::is_regular_file(file) ? Json(FileSystem::readAll(file)) : Json(nullptr);
+                    }
+            FileSystem::writeIfChanged(
+                build / "axlum.dynamic.json",
+                Json{
+                    {"manifests", manifests}, {"dependencies", graph.m_targetDependencies}, {"aliases", graph.m_targetAliases}, {"hostRoots", hostRoots}
+                }.dump()
+            );
+        }
+
+        // Called only from Ninja's build-time graph check, never from configure.
+        bool prepareDynamicSources(
+            const fs::path& build,
+            const std::string& ninja,
+            const std::vector<std::string>* requested = nullptr,
+            const fs::path& executionDirectory = {}
+        )
         {
             const auto file = build / "axlum.dynamic.json";
             if (!fs::is_regular_file(file))
                 return false;
             const auto dynamic = Json::parse(FileSystem::readAll(file));
-            if (dynamic.at("roots").empty())
-                return false;
-            const auto artifacts = Json::parse(FileSystem::readAll(build / "axlum.artifacts.json"));
-            const auto aliases = Json::parse(FileSystem::readAll(build / "axlum.target-selection.json")).at("aliases");
+            const auto& dependencies = dynamic.at("dependencies");
+            const auto& aliases = dynamic.at("aliases");
             std::set<std::string> closure;
             std::function<void(std::string)> visit = [&](std::string name)
             {
                 if (aliases.contains(name))
                     name = aliases.at(name).get<std::string>();
-                if (!closure.insert(name).second || !artifacts.contains(name))
+                if (!closure.insert(name).second || !dependencies.contains(name))
                     return;
-                for (const auto& dependency : artifacts.at(name).value("dependencies", std::vector<std::string>{}))
-                    visit(dependency);
+                for (const auto& dependency : dependencies.at(name))
+                    visit(dependency.get<std::string>());
             };
             const auto* selected = std::getenv("AXLUM_BUILD_TARGETS");
-            auto roots = selected && *selected ? Json::parse(selected).get<std::vector<std::string>>() : std::vector<std::string>{};
+            auto roots = requested ? *requested : selected && *selected ? Json::parse(selected).get<std::vector<std::string>>() : std::vector<std::string>{};
             if (roots.empty() || std::find(roots.begin(), roots.end(), "all") != roots.end())
-                for (const auto& [name, value] : artifacts.items())
+                for (const auto& [name, value] : dependencies.items())
                     visit(name);
             else
                 for (const auto& name : roots)
                     visit(name);
-            std::vector<std::string> command = {ninja, "-C", build.string(), "-f", "generators.ninja"};
+            std::vector<std::string> hostRoots;
+            for (const auto& name : dynamic.at("hostRoots"))
+                if (closure.contains(name.get<std::string>()))
+                    hostRoots.push_back(name.get<std::string>());
+            // Host generators may themselves consume dynamically discovered sources.
+            // Replan those consumers before executing target-context generators.
+            if (!hostRoots.empty() && prepareDynamicSources(build / "host", ninja, &hostRoots, build))
+                return true;
+            const auto executionRoot = executionDirectory.empty() ? build : executionDirectory;
+            std::vector<std::string> command = {ninja, "-C", executionRoot.string(), "-f", requested ? "host-generators.ninja" : "generators.ninja"};
             if (const auto* jobs = std::getenv("AXLUM_BUILD_JOBS"); jobs && *jobs)
                 command.insert(command.end(), {"-j", jobs});
             else
                 command.insert(command.end(), {"-j", "8"});
             const auto start = command.size();
-            for (const auto& root : dynamic.at("roots"))
-                if (closure.contains(root.get<std::string>()))
-                    command.push_back(root.get<std::string>());
+            for (const auto& [root, manifests] : dynamic.at("manifests").items())
+                if (closure.contains(root))
+                    command.push_back(root);
             if (command.size() == start)
                 return false;
             std::string output;
             const auto status = Process::run(
                 command,
                 {},
-                FileSystem::readEnvironment(build / "axlum.environment.json"),
+                FileSystem::readEnvironment(executionRoot / "axlum.environment.json"),
                 [&](std::string_view text)
                 {
                     output += text;
@@ -182,9 +239,11 @@ namespace axlum
                 std::cout << output;
             if (status != 0)
                 throw std::runtime_error("dynamic source generation failed");
-            for (const auto& [path, content] : dynamic.at("manifests").items())
-                if (!fs::is_regular_file(path) || FileSystem::readAll(path) != content.get<std::string>())
-                    return true;
+            for (const auto& [root, manifests] : dynamic.at("manifests").items())
+                if (closure.contains(root))
+                    for (const auto& [path, content] : manifests.items())
+                        if (content.is_null() || !fs::is_regular_file(path) || FileSystem::readAll(path) != content.get<std::string>())
+                            return true;
             return false;
         }
     } // namespace
@@ -484,6 +543,13 @@ namespace axlum
 
     ab::IDEContext Application::configure(Arguments opt, const fs::path& buildDir, const fs::path& self, bool automatic, bool skipEmpty)
     {
+        const auto started = std::chrono::steady_clock::now();
+        auto progress = [&](const std::string& stage)
+        {
+            const auto seconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count() / 1000.0;
+            std::cout << "[configure " << seconds << "s] " << stage << std::endl;
+        };
+        progress("Loading configuration: " + opt.m_file);
         if (fs::is_regular_file(buildDir / "axlum.environment.json"))
         {
             const auto previous = ab::FileSystem::readEnvironment(buildDir / "axlum.environment.json");
@@ -577,6 +643,7 @@ namespace axlum
                 reasons += "\n  " + name + ": " + reason;
             throw std::runtime_error("no targets support this configuration" + reasons);
         }
+        progress("Detecting target toolchain (" + opt.m_compiler + ", " + opt.m_architecture + ")");
         auto tc = ab::ToolchainDiscovery::discoverToolchain(opt.m_compiler, ws.m_root, opt.m_toolchain, opt.m_architecture, opt.m_platform);
         if (!ws.m_architectures.empty() && std::find(ws.m_architectures.begin(), ws.m_architectures.end(), opt.m_architecture) == ws.m_architectures.end())
             throw std::runtime_error("architecture is not declared by workspace: " + opt.m_architecture);
@@ -595,12 +662,6 @@ namespace axlum
             }
         }
         tc.m_environment["AXLUM_TOOLCHAIN_FINGERPRINT"] = fingerprint;
-        const auto* inheritedJobs = std::getenv("AXLUM_BUILD_JOBS");
-        const auto generatorJobs = std::to_string(
-            opt.m_execution.m_jobs > 0        ? opt.m_execution.m_jobs
-            : inheritedJobs && *inheritedJobs ? std::stoi(inheritedJobs)
-                                              : 8
-        );
         BuildGraph hostGraph;
         std::map<std::string, fs::path> hostArtifacts;
         std::map<std::string, std::vector<fs::path>> hostOutputLists;
@@ -619,40 +680,35 @@ namespace axlum
                 ToolchainDiscovery::hostTriple().find("aarch64") != std::string::npos || ToolchainDiscovery::hostTriple().find("arm64") != std::string::npos
                     ? "arm64"
                     : "x64";
+            progress("Planning host tools and resolving their dependencies");
             auto hostWs = ManifestLoader::loadManifest(opt.m_file, config, hostBuild, hostArch, hostPlatform);
             DslFeatures::selectClosure(hostWs, hostRoots);
             auto hostTc = ToolchainDiscovery::discoverToolchain("auto", hostWs.m_root, {}, hostArch, hostPlatform);
             ToolchainDiscovery::reuseSearchPath(hostTc, hostBuild);
             DslFeatures::resolveToolPackages(hostWs, hostBuild, config, opt.m_locked);
-            PackageManager::resolvePackages(hostWs, hostTc, config, opt.m_locked, true, tc.m_host != tc.m_target ? hostBuild / "packages" : fs::path{});
-            DslFeatures::prepare(hostWs, hostBuild, config, self);
-            std::vector<std::string> hostDynamic;
-            for (auto& target : hostWs.m_targets)
-                if (target.m_features.contains("outputmanifest"))
-                    hostDynamic.push_back(target.m_name);
-            if (!hostDynamic.empty() && !opt.m_cachedGenerators)
+            const auto hostStorage = tc.m_host != tc.m_target ? hostBuild / "packages" : fs::path{};
+            // Isolated cross-build package storage has its own resolver state.
+            const auto hostPackageState = hostBuild / "axlum.packages";
+            const auto hostFingerprint = PackageManager::packageInputsFingerprint(hostWs, hostTc, config, hostBuild);
+            const bool cachedHost =
+                hostStorage.empty() && !opt.m_locked && fs::is_regular_file(hostPackageState) && FileSystem::readAll(hostPackageState) == hostFingerprint;
+            if (cachedHost)
             {
-                auto generators = hostWs;
-                DslFeatures::selectClosure(generators, hostDynamic);
-                auto bootstrap = BuildPlanner::planBuild(generators, hostTc, hostBuild, config, self);
-                for (auto& action : bootstrap.m_actions)
+                auto resolved = hostWs;
+                try
                 {
-                    action.m_environmentIsolated = true;
-                    auto environment = hostTc.m_environment;
-                    for (const auto& [key, value] : action.m_environment)
-                        environment[key] = value;
-                    action.m_environment = std::move(environment);
+                    PackageManager::resolvePackages(resolved, hostTc, config, opt.m_locked, false);
+                    hostWs = std::move(resolved);
                 }
-                NinjaBackend::generateNinja(bootstrap, hostBuild, self, false, "generators.ninja");
-                std::vector<std::string> command = {hostTc.m_ninja, "-C", hostBuild.string(), "-f", "generators.ninja", "-j", generatorJobs, "all"};
-                if (Process::run(command, hostWs.m_root, hostTc.m_environment) != 0)
-                    throw std::runtime_error("host dynamic source generation failed");
-                hostWs = ManifestLoader::loadManifest(opt.m_file, config, hostBuild, hostArch, hostPlatform);
-                DslFeatures::selectClosure(hostWs, hostRoots);
-                DslFeatures::resolveToolPackages(hostWs, hostBuild, config, opt.m_locked);
-                PackageManager::resolvePackages(hostWs, hostTc, config, opt.m_locked, false, tc.m_host != tc.m_target ? hostBuild / "packages" : fs::path{});
-                DslFeatures::prepare(hostWs, hostBuild, config, self);
+                catch (const std::exception&)
+                {
+                    PackageManager::resolvePackages(hostWs, hostTc, config, opt.m_locked, true, hostStorage);
+                }
             }
+            else
+                PackageManager::resolvePackages(hostWs, hostTc, config, opt.m_locked, true, hostStorage);
+            FileSystem::writeIfChanged(hostPackageState, PackageManager::packageInputsFingerprint(hostWs, hostTc, config, hostBuild));
+            DslFeatures::prepare(hostWs, hostBuild, config, self);
             hostGraph = BuildPlanner::planBuild(hostWs, hostTc, hostBuild, config, self);
             for (auto& action : hostGraph.m_actions)
             {
@@ -662,7 +718,14 @@ namespace axlum
                     environment[key] = value;
                 action.m_environment = std::move(environment);
             }
-            NinjaBackend::generateNinja(hostGraph, hostBuild, self, false);
+            // Host and target actions own the same host outputs. Use the same
+            // environment paths and Ninja databases in both scheduling views.
+            // Every host action already carries its isolated host environment.
+            // Do not transiently overwrite the main environment file with host
+            // values: its timestamp is an implicit input to target actions.
+            hostGraph.m_environment = tc.m_environment;
+            NinjaBackend::generateNinja(hostGraph, buildDir, self, false, "host-generators.ninja");
+            saveDynamicSources(hostWs, hostGraph, hostBuild);
             for (auto& action : hostGraph.m_actions)
             {
                 action.m_environmentIsolated = true;
@@ -695,10 +758,11 @@ namespace axlum
                     target.m_publicPackages.clear();
                 }
         }
+        progress("Resolving project dependencies (reusing cached artifacts when valid)");
         DslFeatures::resolveToolPackages(ws, buildDir, config, opt.m_locked);
         const auto packageFingerprint = ab::PackageManager::packageInputsFingerprint(ws, tc, config, buildDir);
         const auto packageState = buildDir / "axlum.packages";
-        const bool restore = !automatic || !fs::is_regular_file(packageState) || ab::FileSystem::readAll(packageState) != packageFingerprint;
+        const bool restore = opt.m_locked || !fs::is_regular_file(packageState) || ab::FileSystem::readAll(packageState) != packageFingerprint;
         if (restore)
             ab::PackageManager::resolvePackages(ws, tc, config, opt.m_locked);
         else
@@ -715,61 +779,26 @@ namespace axlum
                 ab::PackageManager::resolvePackages(ws, tc, config, opt.m_locked);
             }
         }
+        progress("Planning targets and generated sources");
         DslFeatures::prepare(ws, buildDir, config, self);
         std::vector<std::string> dynamicRoots;
         for (auto& target : ws.m_targets)
             if (target.m_features.contains("outputmanifest"))
                 dynamicRoots.push_back(target.m_name);
-        if (!dynamicRoots.empty())
-        {
-            auto generators = ws;
-            DslFeatures::selectClosure(generators, dynamicRoots);
-            auto bootstrap = BuildPlanner::planBuild(generators, tc, buildDir, config, self, hostGraph.m_actions.empty() ? nullptr : &hostGraph);
-            const auto generatorDirectory = buildDir;
-            NinjaBackend::generateNinja(bootstrap, generatorDirectory, self, false, "generators.ninja");
-            std::vector<std::string> command = {tc.m_ninja, "-C", generatorDirectory.string(), "-f", "generators.ninja", "-j", generatorJobs};
-            command.insert(command.end(), dynamicRoots.begin(), dynamicRoots.end());
-            if (!opt.m_cachedGenerators && Process::run(command, ws.m_root, tc.m_environment) != 0)
-                throw std::runtime_error("dynamic source generation failed");
-            ws = ManifestLoader::loadManifest(opt.m_file, config, buildDir, opt.m_architecture, opt.m_platform);
-            for (auto& target : ws.m_targets)
-                if (hostArtifacts.contains(target.m_name))
-                {
-                    target.m_hostArtifact = hostArtifacts.at(target.m_name);
-                    for (const auto& output : hostOutputLists.at(target.m_name))
-                        target.m_features["host_outputs"].push_back(output.generic_string());
-                    target.m_sources.clear();
-                    target.m_publicDependencies.clear();
-                    target.m_privateDependencies.clear();
-                    target.m_interfaceDependencies.clear();
-                    target.m_packages.clear();
-                    target.m_publicPackages.clear();
-                }
-            DslFeatures::resolveToolPackages(ws, buildDir, config, opt.m_locked);
-            PackageManager::resolvePackages(ws, tc, config, opt.m_locked, false);
-            DslFeatures::prepare(ws, buildDir, config, self);
-        }
         ab::ManagedProjectGenerator::prepareManagedProjects(ws, buildDir, self);
         auto graph = ab::BuildPlanner::planBuild(ws, tc, buildDir, config, self, hostGraph.m_actions.empty() ? nullptr : &hostGraph);
-        Json dynamicManifests = Json::object();
-        for (const auto& target : ws.m_targets)
-            if (target.m_features.contains("outputmanifest"))
-                for (const auto& value : target.m_features.at("outputmanifest"))
-                {
-                    auto path = value.get<std::string>();
-                    if (path.starts_with("@build/"))
-                        path.erase(0, 7);
-                    const auto file = fs::absolute(buildDir / path).lexically_normal();
-                    dynamicManifests[file.generic_string()] = FileSystem::readAll(file);
-                }
-        // Use the same action commands and Ninja log as the main graph. Preflight
-        // builds only dynamic roots and their dependencies, never the default all.
         if (!dynamicRoots.empty())
             ab::NinjaBackend::generateNinja(graph, buildDir, self, false, "generators.ninja");
-        FileSystem::writeIfChanged(buildDir / "axlum.dynamic.json", Json{{"roots", dynamicRoots}, {"manifests", dynamicManifests}}.dump());
+        saveDynamicSources(ws, graph, buildDir, hostRoots);
+        progress("Writing build graph and editor metadata");
         ab::NinjaBackend::generateNinja(graph, buildDir, self);
         ab::NinjaBackend::generateCompileCommands(graph, buildDir);
         ab::IDEGenerator::writeArtifactIndex(graph, buildDir);
+        std::vector<std::string> runTargets;
+        for (const auto& target : ws.m_targets)
+            if (!target.m_hostTool && (target.m_kind == TargetKind::Executable || target.m_managedExecutable))
+                runTargets.push_back(target.m_name);
+        FileSystem::writeIfChanged(buildDir / "axlum.run-targets.json", Json(runTargets).dump());
         // Remove only previously declared, now orphaned files inside this build directory.
         // Never delete a file reused as an input by the replacement graph.
         auto pathKey = [](const fs::path& path)
@@ -829,6 +858,7 @@ namespace axlum
         guard.committed = true;
         FileSystem::writeIfChanged(buildDir / "axlum.option-schema.json", ws.m_features.value("options", nlohmann::json::object()).dump(2));
         saveConfigureInputs(ws, buildDir, self);
+        progress("Configuration complete");
         if (!automatic)
             std::cout << "Configured " << ws.m_name << " (" << tc.m_target << ", " << ab::BuildModel::toString(config) << ")\n"
                       << "Build graph: " << (buildDir / "build.ninja") << "\n"
@@ -836,7 +866,7 @@ namespace axlum
         return {std::move(ws), std::move(tc), graph, buildDir, config, BuildModel::toString(config) + "-" + opt.m_architecture};
     }
 
-    ab::IDEContext Application::refresh(const fs::path& buildDir, const fs::path& self, bool cachedGenerators)
+    ab::IDEContext Application::refresh(const fs::path& buildDir, const fs::path& self)
     {
         const auto state = readState(buildDir);
         Arguments opt;
@@ -848,7 +878,6 @@ namespace axlum
         opt.m_architecture = state.contains("architecture") ? state.at("architecture") : "x64";
         opt.m_platform = state.contains("platform") ? state.at("platform") : "";
         opt.m_preset = state.contains("preset") ? state.at("preset") : "";
-        opt.m_cachedGenerators = cachedGenerators;
         return configure(opt, buildDir, self, true);
     }
 
@@ -1125,8 +1154,8 @@ namespace axlum
                 const auto directory = fs::absolute(args[2]).lexically_normal();
                 if (configureInputsChanged(directory))
                     refresh(directory, currentExecutable(argv[0]));
-                else if (prepareDynamicSources(directory, readState(directory).at("ninja")))
-                    refresh(directory, currentExecutable(argv[0]), true);
+                while (prepareDynamicSources(directory, readState(directory).at("ninja")))
+                    refresh(directory, currentExecutable(argv[0]));
                 return 0;
             }
             auto& opt = m_options;
@@ -1166,11 +1195,45 @@ namespace axlum
                     args.insert(args.begin(), "configure");
                 if (!args.empty() && args[0] == "run")
                 {
-                    const auto separator = std::find(args.begin(), args.end(), "--");
-                    if (separator != args.end())
+                    bool hasTarget = false;
+                    const std::set<std::string> values = {"-B", "--build-dir", "-t", "--target", "--config", "--cwd", "--env", "-j", "--jobs", "--parallel"};
+                    const std::set<std::string> flags = {"--no-build", "-v", "--verbose", "-h", "--help", "--help-all"};
+                    for (std::size_t i = 1; i < args.size(); ++i)
                     {
-                        opt.m_runArguments.assign(separator + 1, args.end());
-                        args.erase(separator, args.end());
+                        if (args[i] == "--")
+                        {
+                            opt.m_runArguments.assign(args.begin() + i + 1, args.end());
+                            args.erase(args.begin() + i, args.end());
+                            break;
+                        }
+                        auto key = args[i].substr(0, args[i].find('='));
+                        bool attached = args[i].find('=') != std::string::npos;
+                        if (!values.contains(key) && args[i].size() > 2 && values.contains(args[i].substr(0, 2)))
+                        {
+                            key = args[i].substr(0, 2);
+                            attached = true;
+                        }
+                        if (values.contains(key))
+                        {
+                            if (key == "-t" || key == "--target")
+                                hasTarget = true;
+                            if (!attached)
+                                ++i;
+                            continue;
+                        }
+                        if (flags.contains(key))
+                            continue;
+                        if (!hasTarget && !args[i].starts_with("-"))
+                        {
+                            hasTarget = true;
+                            continue;
+                        }
+                        if (hasTarget)
+                        {
+                            opt.m_runArguments.assign(args.begin() + i, args.end());
+                            args.erase(args.begin() + i, args.end());
+                            break;
+                        }
                     }
                 }
                 std::vector<char*> parsed{argv[0]};
@@ -1255,6 +1318,19 @@ namespace axlum
             {
                 auto index = Json::parse(FileSystem::readAll(buildDir / "axlum.artifacts.json"));
                 auto target = opt.m_target;
+                if (target.empty() && fs::is_regular_file(buildDir / "axlum.run-targets.json"))
+                {
+                    const auto candidates = Json::parse(FileSystem::readAll(buildDir / "axlum.run-targets.json"));
+                    if (!candidates.empty())
+                        target = candidates.front().get<std::string>();
+                }
+                if (target.empty())
+                    for (const auto& [name, data] : index.items())
+                        if (data.at("kind") == "executable")
+                        {
+                            target = name;
+                            break;
+                        }
                 for (std::size_t at; (at = target.find("::")) != std::string::npos;)
                     target.replace(at, 2, "__");
                 const auto selection = Json::parse(FileSystem::readAll(buildDir / "axlum.target-selection.json"));

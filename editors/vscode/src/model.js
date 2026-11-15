@@ -27,7 +27,7 @@ function selection(project, saved = {}) {
     const preferred = runnable.find(t => t.name === entry.startupTarget) || runnable[0];
     return {
         entry,
-        build: prior.build === 'all' || visible.some(t => t.name === prior.build) ? prior.build : preferred?.name || 'all',
+        build: prior.build === 'all' || visible.some(t => t.name === prior.build) ? prior.build : 'all',
         run: runnable.some(t => t.name === prior.run) ? prior.run : preferred?.name,
         visible, runnable
     };

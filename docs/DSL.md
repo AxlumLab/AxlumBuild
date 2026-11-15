@@ -297,25 +297,32 @@ to a target's actions; maps overlay the discovered toolchain environment.
 paths, relative to the manifest's directory. Its entries must remain within that
 directory. A generator must write its manifest and files atomically as appropriate
 and preserve timestamps for unchanged content. `generatedsources` selects output
-extensions from that producer. Configure/refresh builds the generator dependency
-closure before planning consumers, so the first build and additions/removals work
-in the same invocation. Bootstrap graphs keep independent Ninja dependency databases. After bootstrap,
-the consumer graph retains output-verification actions and ownership for clean,
-without rerunning the producers. This avoids concurrent nested writes to Ninja's
-dependency/log databases. Generator failure aborts graph replacement; malformed,
-escaping, conflicting or missing outputs fail. Removed owned files are cleaned
+extensions from that producer. Configure describes generator and consumer rules
+without compiling workspace targets or running generators. On build (including
+direct Ninja), the graph check executes the selected targets' generator dependency
+closure, then reloads changed output manifests before compiling consumers. Missing
+manifests are valid before the first build. Added and removed generated sources
+are reflected in the compilation database during that same build. Unrelated
+generators remain unbuilt. Generator failures stop the build; malformed, escaping,
+conflicting or missing outputs fail validation. Removed owned files are cleaned
 through the ordinary output ledger. This is explicit manifest-based discovery,
 not an untracked glob over an arbitrary generated directory.
 
 `hosttool(true)` builds an executable and its transitive dependency closure with
 the host platform/architecture/toolchain under `<B>/host`. Native declarations are
 reevaluated for that host context, including platform conditions and packages.
-Configure/refresh incrementally builds the host graph with its own environment
-and dependency database. The target graph retains output-verification actions and
-uses the resulting executable and runtime dependencies. Cross-toolchain package
-storage is isolated from target storage. Static/shared dependencies can exist in
-both contexts without sharing objects. Cross-compiled executable targets without
-hosttool cannot be used as runnable generators.
+Configure plans the host graph with its own environment. Host discovery and the
+main build share one Ninja dependency database and identical action environment
+paths, so alternating between them does not invalidate the same host objects. Build first discovers
+any dynamic sources needed by selected host tools, then compiles those tools when
+their consumers need them. Cross-toolchain package storage is isolated from target
+storage. Static/shared dependencies can exist in both contexts without sharing
+objects. Cross-compiled executable targets without hosttool cannot be used as
+runnable generators.
+
+Dependency preparation remains part of configure: Rhodium can acquire and build
+third-party package artifacts when their cache is missing or invalid. Workspace
+targets, including host tools and code generators, execute only during build.
 
 ## Tests and runtime resources
 

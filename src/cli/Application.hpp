@@ -41,7 +41,7 @@ namespace axlum
             std::string m_toolchain;
             std::string m_architecture = "x64", m_platform, m_preset, m_format = "all", m_output;
             std::vector<std::string> m_presets;
-            bool m_configureOnly = false, m_cachedGenerators = false;
+            bool m_configureOnly = false;
             InstallRequest m_installation;
             CleanRequest m_cleaning;
             bool m_noBuild = false, m_json = false, m_strict = false, m_cleanFirst = false, m_cleanAll = false, m_buildFirst = false;
@@ -58,7 +58,7 @@ namespace axlum
         void printGraph(const BuildGraph& graph);
         fs::path currentExecutable(const std::string& arg0);
         IDEContext configure(Arguments opt, const fs::path& buildDir, const fs::path& self, bool automatic = false, bool skipEmpty = false);
-        IDEContext refresh(const fs::path& buildDir, const fs::path& self, bool cachedGenerators = false);
+        IDEContext refresh(const fs::path& buildDir, const fs::path& self);
         int configureEntries(const Arguments& options, const fs::path& self);
         int doctor(const Arguments& options);
         int runWrapped(const std::vector<std::string>& args);

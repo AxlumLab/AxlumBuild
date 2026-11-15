@@ -709,7 +709,7 @@ namespace axlum
                 }
             }
             const auto preferred = startupTarget(contexts.front());
-            const auto defaultTarget = preferred.empty() ? "all" : preferred;
+            const std::string defaultTarget = "all";
             const auto directory = contexts.size() == 1 ? contexts.front().m_buildDirectory.string() : "${input:axlum.configuration}";
             Json inputs = Json::array(
                 {{{"id", "axlum.buildTarget"}, {"type", "pickString"}, {"description", "Build target"}, {"options", choices}, {"default", defaultTarget}}}

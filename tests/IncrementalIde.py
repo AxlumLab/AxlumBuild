@@ -40,9 +40,13 @@ with tempfile.TemporaryDirectory(prefix="axlum incremental ide ") as temporary:
         'inputs({"Generate.py","choice.txt"}) outputmanifest("generated/Outputs.json")\n'
         'target("GeneratedApp") kind("ConsoleApp") files("GeneratedApp.cpp") generatedsources("Generate")\n'
     )
-    run(cli, "configure", "-f", manifest, "-B", build)
+    output = run(cli, "configure", "-f", manifest, "-B", build)
+    assert "Compile " not in output and "Generate " not in output and "Link " not in output, output
+    assert not (build / "generated/Outputs.json").exists()
+    assert json.loads((build / "axlum.run-targets.json").read_text()) == ["Plain", "GeneratedApp"]
     assert not (build / "host/bin/UnrelatedHost.exe").exists()
     run(cli, "build", "-B", build, "-t", "Plain")
+    assert not (build / "generated/Outputs.json").exists()
     snapshot = build / "axlum.configure-inputs.json"
     before = snapshot.stat().st_mtime_ns
     assert "no work to do" in run(cli, "build", "-B", build, "-t", "Plain")
@@ -56,7 +60,11 @@ with tempfile.TemporaryDirectory(prefix="axlum incremental ide ") as temporary:
     assert snapshot.stat().st_mtime_ns == before
     run(cli, "run", "-B", build, "Plain")
     assert snapshot.stat().st_mtime_ns == before
-    run(cli, "build", "-B", build, "-t", "GeneratedApp")
+    # Direct Ninja must also bootstrap a previously unbuilt dynamic source set.
+    state = dict(line.split("=", 1) for line in (build / "axlum.state").read_text().splitlines() if "=" in line)
+    env = dict(os.environ, AXLUM_BUILD_TARGETS=json.dumps(["GeneratedApp"]))
+    result = subprocess.run([state["ninja"], "-C", str(build), "GeneratedApp"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
     database = (build / "compile_commands.json").read_text()
     assert "Two.cpp" in database and "One.cpp" not in database
     run(cli, "run", "-B", build, "GeneratedApp")

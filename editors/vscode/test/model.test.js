@@ -41,3 +41,15 @@ test('personal debugger adapters and custom pre-launch tasks survive; attach sta
     assert.equal(launch.environment, undefined);
     assert.throws(() => launchConfiguration(app, [{name:'Debug:App', request:'attach'}]), /attach/);
 });
+
+test('default build is all and run selects the first executable independently', () => {
+    const fresh = structuredClone(project);
+    delete fresh.entries[0].startupTarget;
+    fresh.entries[0].targets.unshift({ ...app, name: 'Zeta' });
+    const state = selection(fresh);
+    assert.equal(state.build, 'all');
+    assert.equal(state.run, 'Zeta');
+    const saved = saveSelection({}, { ...state, run: 'App' });
+    assert.equal(selection(fresh, saved).build, 'all');
+    assert.equal(selection(fresh, saved).run, 'App');
+});

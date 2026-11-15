@@ -70,6 +70,26 @@ with tempfile.TemporaryDirectory(prefix="cli lifecycle ", dir=s_scratch) as s_tm
         and "arg=-x" in s_result
     )
     run(s_cli, "run", "-B", s_build, "-t", "App", "--no-build", "--", "--fail", code=7)
+    snapshot = s_build / "axlum.configure-inputs.json"
+    before = snapshot.stat().st_mtime_ns
+    # Atomic state-file replacement can touch the workspace directory without
+    # changing its membership or any build input.
+    transient = s_source / "temporary-state.tmp"
+    transient.write_text("transient")
+    transient.unlink()
+    result = run(s_cli, "run", "-B", s_build, "--target", "App", "two words", "-x", "--config", "application-value")
+    assert "arg=two words" in result and "arg=-x" in result and "arg=application-value" in result, result
+    assert "[configure" not in result and "Compile " not in result and "Link " not in result, result
+    assert snapshot.stat().st_mtime_ns == before
+    result = run(s_cli, "run", "-B", s_build)
+    assert "[configure" not in result and "Compile " not in result and "Link " not in result, result
+    run(s_cli, "run", "-B", s_build, "--target=App", "--fail", code=7)
+    # Cache-only cleanup preserves compiler dependency history and products.
+    run(s_cli, "clean", "-B", s_build, "--mode", "cache")
+    assert (s_build / ".ninja_log").exists() and (s_build / ".ninja_deps").exists()
+    run(s_cli, "configure", "-S", s_source, "-B", s_build, "--config", "Release")
+    result = run(s_cli, "build", "-B", s_build, "-t", "App")
+    assert "Compile " not in result and "Link " not in result, result
     s_targets = json.loads(run(s_cli, "targets", "-B", s_build, "--json"))
     assert {"App", "Library"} <= s_targets["targets"].keys()
     run(s_cli, "publish", "-B", s_build, "-t", "App", "--prefix", s_prefix, "--dry-run")

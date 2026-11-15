@@ -70,6 +70,17 @@ int main(int argc,char**argv){
 }
 ''')
     (source / "HostPartGen.py").write_text('from pathlib import Path\nimport json,sys\np=Path(sys.argv[1]);p.mkdir(parents=True,exist_ok=True)\nfor name,text in {"HostPart.cpp":"int hostGenerated(){return 42;}","Outputs.json":json.dumps(["HostPart.cpp"])}.items():\n f=p/name\n if not f.exists() or f.read_text()!=text:f.write_text(text)\n')
+    (source / "PartWriter.cpp").write_text(r'''#include <filesystem>
+#include <fstream>
+#include <string>
+int main(int argc, char** argv) {
+ if(argc!=2) return 1;
+ std::filesystem::path out=argv[1]; std::filesystem::create_directories(out);
+ std::ofstream(out/"HostPart.cpp") << "int hostGenerated(){return 42;}";
+ std::ofstream(out/"Outputs.json") << "[\"HostPart.cpp\"]";
+ return 0;
+}
+''')
     (source / "Managed").mkdir()
     (source / "Managed/App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>')
     (source / "Managed/Program.cs").write_text('return Generated.Value == 42 ? 0 : 1;')
@@ -88,8 +99,9 @@ characterset("UTF-8")
 configure_header("generated/Config.hpp",{ENABLED=enabled,TEXT='a"b\\\\c'})
 configure_file("Config.hpp.in","generated/Template.hpp",{NUMBER=17,STRING='quoted"value'})
 when("windows",function() rhodium.system("system",{links={"Ws2_32"}}) end)
-target("HostParts") kind("Codegen") tool(python)
- args({"${workspace}/HostPartGen.py","${build}/hostparts"}) inputs("HostPartGen.py") outputmanifest("hostparts/Outputs.json")
+target("PartWriter") kind("ConsoleApp") files("PartWriter.cpp")
+target("HostParts") kind("Codegen") tool("@target/PartWriter")
+ args({"${build}/hostparts"}) outputmanifest("hostparts/Outputs.json")
 target("HostGenerator") kind("ConsoleApp") hosttool(true) files("Host.cpp") generatedsources("HostParts")
 target("Generate") kind("Codegen") tool("@target/HostGenerator")
  args({"${workspace}/inputs","${build}/generated/parts"})
@@ -110,12 +122,22 @@ target("ManagedApp") kind("DotNetProject") project("Managed/App.csproj") private
 test("Managed",{target="ManagedApp",labels={"managed"}})
 '''.replace("PYTHON", json.dumps(sys.executable.replace("\\", "/")))
     (source / "axlum.build.lua").write_text(manifest)
-    run(cli, "configure", "-S", source, "-B", build)
+    output = run(cli, "configure", "-S", source, "-B", build)
+    assert "Compile " not in output and "Generate " not in output and "Link " not in output, output
+    assert not (build / "host/hostparts/Outputs.json").exists()
+    assert not (build / "generated/parts/Outputs.json").exists()
+    assert not list(build.rglob("*.obj")) and not list(build.rglob("*.o"))
     run(cli, "test", "-B", build)
     product = build / "bin" / ("App.exe" if os.name == "nt" else "App")
     before = product.stat().st_mtime_ns
     output = run(cli, "build", "-B", build)
     assert product.stat().st_mtime_ns == before and "Compile " not in output and "Generate " not in output, output
+    for _ in range(3):
+        output = run(cli, "run", "-B", build, "-t", "App", "--env", "TEST_VALUE=yes")
+        assert "Compile " not in output and "Generate " not in output and "Link " not in output and "[configure" not in output, output
+    run(cli, "configure", "-S", source, "-B", build)
+    output = run(cli, "build", "-B", build, "-t", "App")
+    assert "Compile " not in output and "Generate " not in output and "Link " not in output, output
     schema = json.loads(run(cli, "options", "-S", source, "-B", build, "--json"))
     assert schema["backend"]["value"] == "a"
     run(cli, "configure", "-S", source, "-B", build, "--preset", "alternate")

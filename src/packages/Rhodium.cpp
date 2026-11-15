@@ -96,10 +96,34 @@ namespace axlum
         std::string data = rhodium::JsonModel::write(model) + ToolchainDiscovery::toolchainFingerprint(tc, config) + BuildModel::toString(config);
         for (const auto& [name, runtime] : packageRuntimes(ws, tc))
             data += "\n" + name + "=" + runtime;
+        // Large local/prebuilt packages can contain gigabytes of libraries. Reuse
+        // content hashes while their size and write time remain unchanged.
+        const auto cacheFile = build / "axlum.package-inputs.json";
+        nlohmann::json cached = nlohmann::json::object(), current = nlohmann::json::object();
+        if (fs::is_regular_file(cacheFile))
+        {
+            cached = nlohmann::json::parse(FileSystem::readAll(cacheFile), nullptr, false);
+            if (!cached.is_object())
+                cached = nlohmann::json::object();
+        }
         auto addFile = [&](const fs::path& path)
         {
-            data += "\n" + fs::absolute(path).lexically_normal().generic_string() + "=";
-            data += fs::is_regular_file(path) ? FileSystem::shortHash(FileSystem::readAll(path)) : "missing";
+            const auto key = fs::absolute(path).lexically_normal().generic_string();
+            data += "\n" + key + "=";
+            if (!fs::is_regular_file(path))
+            {
+                data += "missing";
+                return;
+            }
+            const auto version = std::to_string(fs::last_write_time(path).time_since_epoch().count()) + ":" + std::to_string(fs::file_size(path));
+            std::string hash;
+            if (cached.contains(key) && cached[key].is_object() && cached[key].value("version", std::string{}) == version && cached[key].contains("hash") &&
+                cached[key]["hash"].is_string())
+                hash = cached[key]["hash"].get<std::string>();
+            else
+                hash = FileSystem::shortHash(FileSystem::readAll(path));
+            current[key] = {{"version", version}, {"hash", hash}};
+            data += hash;
         };
         addFile(rhodium::Path::lockFile(ws.m_root));
         Diagnostics diagnostics;
@@ -145,6 +169,7 @@ namespace axlum
             for (const auto& file : files)
                 addFile(file);
         }
+        FileSystem::writeIfChanged(cacheFile, current.dump());
         return FileSystem::shortHash(data);
     }
 

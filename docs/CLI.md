@@ -23,6 +23,21 @@ Build directories retain a single configuration; `--config` on an existing build
 validates that configuration. `--parallel` aliases `--jobs`; `--clean-first`
 uses the existing rebuild flow.
 
+`run -B build/demo --target App argument --application-option` forwards the first
+non-Axlum argument and all remaining arguments to the executable, preserving order.
+Put Axlum options before application arguments. Use `--` explicitly when the first
+application argument matches an Axlum option (for example `--help` or `--config`).
+The default build target is `all`. With no run target, the CLI selects the first
+non-host executable in declaration order. Editors remember explicit build and run
+selections independently. Run checks the selected target incrementally unless `--no-build` is supplied;
+unchanged inputs do not require full configuration or recompilation.
+
+Configure prints its current stage and elapsed time immediately, including when
+output is captured by an editor. Valid dependency artifacts and unchanged local
+package file hashes are reused. Local file hash reuse uses write time and size;
+`clean --mode cache` clears this metadata if a tool preserves both while changing
+file contents.
+
 ## Publish/install
 
 `publish` prepares selected targets and installs native outputs into `--prefix`
@@ -89,7 +104,7 @@ The CLI returns the application exit code.
 | `build` (default) | Ninja products/intermediates, native SDK clean outputs and owned managed build artifacts |
 | `intermediates` | Objects, PCH/dependency and SDK intermediates; retains final binaries |
 | `publish` | Recorded installations/publications inside this build directory |
-| `cache` | Generated Ninja/configuration state; configure again afterward |
+| `cache` | Generated Ninja/configuration and package fingerprint state; retains objects, Ninja dependency history and ownership ledger for reuse after configure |
 | `all` / `--all` | Build products, internal publications and configuration state |
 
 `--target` scopes build/intermediate/publication cleaning. Dependency closures are
