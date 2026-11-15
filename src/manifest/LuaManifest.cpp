@@ -1871,7 +1871,7 @@ namespace axlum
                     return sol::make_object(lua, resolved.get<std::string>());
                 }
                 if (!enabled)
-                    return sol::make_object(lua, sol::nil);
+                    return sol::make_object(lua, sol::lua_nil);
                 if (name == "hosttool")
                     targetSetting().m_hostTool = value.get<bool>();
                 else if (name == "forceincludes")
@@ -1894,7 +1894,7 @@ namespace axlum
                     if (name == "template")
                         return sol::make_object(lua, "_template_" + FileSystem::shortHash(value.at("output").get<std::string>()));
                 }
-                return sol::make_object(lua, sol::nil);
+                return sol::make_object(lua, sol::lua_nil);
             }
         );
         auto prelude = lua.safe_script(DslFeatures::luaPrelude(), sol::script_pass_on_error);
