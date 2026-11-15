@@ -31,7 +31,7 @@ def run(*args, cwd=None, ok=True):
 
 assert "configure" in run(s_cli)
 assert "doctor" in run(s_cli, "--help")
-assert "AxlumBuild 0.1.0" in run(s_cli, "--version")
+assert "AxlumBuild 0.2.0" in run(s_cli, "--version")
 assert "--compiler" in run(s_cli, "configure", "--help")
 assert "--target" in run(s_cli, "help", "build")
 assert "--config" in run(s_cli, "--help-all")

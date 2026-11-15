@@ -28,7 +28,7 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-project(AxlumBuild VERSION 0.1.0 LANGUAGES CXX)
+project(AxlumBuild VERSION 0.2.0 LANGUAGES CXX)
 
 option(AXLUM_BUILD_TESTS "Build AxlumBuild tests" ${PROJECT_IS_TOP_LEVEL})
 option(AXLUM_USE_INSTALLED_RHODIUM "Use an installed Rhodium::Core instead of the submodule" OFF)
