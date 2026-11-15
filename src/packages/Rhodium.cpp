@@ -9,6 +9,7 @@
 #include "graph/NativeOptions.hpp"
 #include "packages/PackageManifest.hpp"
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -115,7 +116,10 @@ namespace axlum
                 data += "missing";
                 return;
             }
-            const auto version = std::to_string(fs::last_write_time(path).time_since_epoch().count()) + ":" + std::to_string(fs::file_size(path));
+            const auto stamp = fs::last_write_time(path).time_since_epoch();
+            const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(stamp);
+            const auto fraction = std::chrono::duration_cast<std::chrono::nanoseconds>(stamp - seconds);
+            const auto version = std::to_string(seconds.count()) + ":" + std::to_string(fraction.count()) + ":" + std::to_string(fs::file_size(path));
             std::string hash;
             if (cached.contains(key) && cached[key].is_object() && cached[key].value("version", std::string{}) == version && cached[key].contains("hash") &&
                 cached[key]["hash"].is_string())
