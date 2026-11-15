@@ -155,6 +155,7 @@ if(AXLUM_BUILD_TESTS)
     add_test(NAME native-plan COMMAND axlum-native-plan-tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
+    axlumAddPythonTest(command-cache CommandCache.py NO_EXAMPLES TIMEOUT 120)
     axlumAddPythonTest(dsl-features DslFeatures.py TIMEOUT 900)
     axlumAddPythonTest(dsl-convenience DslConvenience.py NO_EXAMPLES TIMEOUT 300)
     axlumAddPythonTest(dsl-validation DslValidation.py TIMEOUT 600)

@@ -5,15 +5,17 @@ and compiler arguments as Ninja. They delegate builds to AxlumBuild rather than
 creating a second set of compiler/linker rules.
 
 ```powershell
-build/axlum-build.exe ide -f examples/workspace-suite/axlum.build.lua `
-  -B build/suite -o build/suite-projects --format all
+build/axlum-build.exe configure -f examples/workspace-suite/axlum.build.lua -B build/suite
+build/axlum-build.exe ide -B build/suite -o build/suite-projects --format all
 ```
 
-Formats: `vscode`, `vs`, `xcode`, `android-studio`, `all`. Without a preset, IDE
-generation configures each declared configuration for `--arch` (default x64).
-`--preset name` can be repeated to select declared matrix entries. Each entry has
-a separate directory beneath `-B`. Generation fails when a selected toolchain is
-unavailable, rather than generating commands for a different architecture.
+IDE generation reads the existing configuration cache; it does not configure,
+compile, restore dependencies or run tests. Formats: `vscode`, `vs`, `desktop`,
+`xcode`, `android-studio`, `all`. To expose multiple configurations, configure
+separate child directories explicitly, then use their parent as `ide -B`.
+`--preset` selects already configured child entries. Missing cache entries require
+an explicit configure; existing consumer directories need one configure after
+upgrading from a version without the context cache.
 
 ## VSCode
 
@@ -40,8 +42,8 @@ Clangd settings remain user-managed. Generated tasks/launch entries still work
 without the extension. `axlum.ide.json` is the versioned editor metadata protocol;
 the extension watches it and does not reconfigure just because a window opens.
 
-The sidebar's Reconfigure action saves files and replays the original IDE command,
-including presets and CLI options, then reloads the available targets. Refresh
+The sidebar's Reconfigure action saves files, explicitly configures the selected
+entry, then regenerates IDE projects from the updated cache and reloads targets. Refresh
 Panel only reloads metadata. Normal native/managed Run delegates to the CLI and
 does not require a debugger extension; custom pre-launch tasks or envFile use a
 debugger no-debug launch. Debug checks adapter availability before building,

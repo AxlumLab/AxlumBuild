@@ -38,11 +38,41 @@ package file hashes are reused. Local file hash reuse uses write time and size;
 `clean --mode cache` clears this metadata if a tool preserves both while changing
 file contents.
 
+## Configuration cache
+
+Only explicit `configure` evaluates the workspace and prepares dependencies.
+It persists a versioned resolved workspace, toolchain and graph in
+`<B>/axlum.context.json`. `ide`, `graph`, configured `options`, `install` and
+`publish` read that snapshot; they never restore packages or reconfigure.
+
+```powershell
+axlum-build configure -S . -B .axlum/build
+axlum-build ide -B .axlum/build --format desktop
+axlum-build build -B .axlum/build
+axlum-build run -B .axlum/build
+```
+
+`ide` requires an existing configuration. It generates projects for that exact
+build directory, or existing configured child directories; it does not create
+Debug/Release builds implicitly. `matrix` builds existing configured entries.
+Configure each required entry explicitly first.
+
+Build/run/test reuse the graph and perform only incremental work. Changed
+configuration inputs produce a request to run `configure`, without evaluating
+Lua automatically. Add/remove source files or change glob membership with an
+explicit configure. Dynamic output manifests can update the cached build graph
+within a build; this does not evaluate the DSL, probe SDKs or restore packages.
+Queries, IDE generation and normal install do not build. Use `install --build-first`
+when an incremental build is wanted. A missing/incompatible cache requires one
+explicit configure, including build directories created by older Axlum versions.
+
 ## Publish/install
 
 `publish` prepares selected targets and installs native outputs into `--prefix`
 (default `<B>/publish`). `install` consumes existing native outputs; use
-`--build-first` to prepare them. `--no-build` skips graph preparation.
+`--build-first` to prepare them. `--no-build` skips the build. Managed installation
+uses SDK publication with `--no-build --no-restore` to collect existing outputs;
+missing compatible outputs fail instead of silently compiling.
 Repeat `--target` to select multiple targets, including workspace aliases.
 Omission selects all workspace targets; native dependencies follow their consumers.
 Rhodium cache targets are not installed as independent development libraries;

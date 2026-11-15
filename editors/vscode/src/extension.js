@@ -342,7 +342,7 @@ class Controller {
         this.requireProject();
         if (this.busy) throw new Error('An Axlum operation is already running.');
         const replay = this.project.reconfigure;
-        if (!replay || !Array.isArray(replay.args) || replay.args[0] !== 'ide' || !replay.args.every(a => typeof a === 'string'))
+        if (!replay || !Array.isArray(replay.args) || replay.args[0] !== 'configure' || !replay.args.every(a => typeof a === 'string'))
             throw new Error('This metadata lacks a reconfigure command. Generate IDE projects once with the updated Axlum CLI.');
         const operation = { cancelled: false, disposables: [] };
         this.operation = operation;
@@ -351,8 +351,13 @@ class Controller {
             await this.saveBeforeBuild(true);
             if (operation.cancelled) return false;
             const task = new vscode.Task({ type: 'process' }, this.folder || vscode.TaskScope.Workspace, 'Reconfigure workspace', 'Axlum',
-                new vscode.ProcessExecution(this.project.executable, replay.args, { cwd: replay.cwd || this.project.sourceDirectory }));
-            const ok = await this.executeTask(task);
+                new vscode.ProcessExecution(this.project.executable, this.state.entry.configureArgs || replay.args, { cwd: replay.cwd || this.project.sourceDirectory }));
+            let ok = await this.executeTask(task);
+            if (ok && !operation.cancelled && Array.isArray(replay.afterArgs) && replay.afterArgs[0] === 'ide') {
+                const regenerate = new vscode.Task({ type: 'process' }, this.folder || vscode.TaskScope.Workspace, 'Generate IDE projects', 'Axlum',
+                    new vscode.ProcessExecution(this.project.executable, replay.afterArgs, { cwd: replay.cwd || this.project.sourceDirectory }));
+                ok = await this.executeTask(regenerate);
+            }
             this.status = ok ? 'Reconfiguration completed.' : 'Reconfiguration failed or cancelled; see the terminal.';
             this.reloadPending = true;
             return ok;

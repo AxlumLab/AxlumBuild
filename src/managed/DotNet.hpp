@@ -30,7 +30,8 @@ namespace axlum
             const PublishOptions& overrides,
             const ExecutionOptions& execution,
             bool buildFirst = true,
-            fs::path* publishedDirectory = nullptr
+            fs::path* publishedDirectory = nullptr,
+            bool noBuild = false
         );
     };
 } // namespace axlum

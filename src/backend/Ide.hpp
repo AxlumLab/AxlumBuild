@@ -19,7 +19,7 @@ namespace axlum
         fs::path m_buildDirectory;
         Configuration m_configuration;
         std::string m_label;
-        std::vector<std::string> m_regenerateArguments;
+        std::vector<std::string> m_regenerateArguments, m_regenerateIDEArguments;
         fs::path m_regenerateDirectory;
     };
 

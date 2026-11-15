@@ -6,6 +6,7 @@
 
 #include "cli/Application.hpp"
 #include "backend/Ninja.hpp"
+#include "cli/ConfigurationCache.hpp"
 #include "core/BuildOperations.hpp"
 #include "core/Diagnostics.hpp"
 #include "core/Process.hpp"
@@ -141,15 +142,115 @@ namespace axlum
             if (!fs::is_regular_file(file))
                 return true;
             const auto saved = Json::parse(FileSystem::readAll(file));
-            if (!saved.contains("directories") || saved.at("environment") != configureEnvironment())
+            if (saved.at("environment") != configureEnvironment())
                 return true;
-            for (const auto& [path, members] : saved.at("directories").items())
-                if (directoryMembers(path, build) != members)
-                    return true;
             for (const auto& [path, version] : saved.at("files").items())
                 if (fileVersion(path) != version)
                     return true;
             return false;
+        }
+
+        void saveOutputLedger(const BuildGraph& graph, const fs::path& buildDir)
+        {
+            // Remove only previously declared, now orphaned files inside this build directory.
+            // Never delete a file reused as an input by the replacement graph.
+            auto pathKey = [](const fs::path& path)
+            {
+                auto key = fs::absolute(path).lexically_normal().generic_string();
+#ifdef _WIN32
+                std::transform(
+                    key.begin(),
+                    key.end(),
+                    key.begin(),
+                    [](unsigned char c)
+                    {
+                        return static_cast<char>(std::tolower(c));
+                    }
+                );
+#endif
+                return key;
+            };
+            std::set<std::string> outputs, inputs, outputPaths;
+            for (const auto& action : graph.m_actions)
+            {
+                for (const auto& file : action.m_outputs)
+                {
+                    outputs.insert(pathKey(file));
+                    outputPaths.insert(file.generic_string());
+                }
+                for (const auto& file : action.m_inputs)
+                    inputs.insert(pathKey(file));
+                for (const auto& file : action.m_orderOnly)
+                    inputs.insert(pathKey(file));
+            }
+            const auto ledger = buildDir / "axlum.outputs";
+            if (fs::is_regular_file(ledger))
+            {
+                std::ifstream previous(ledger);
+                std::string file;
+                while (std::getline(previous, file))
+                {
+                    const auto resolved = fs::weakly_canonical(file);
+                    if (!outputs.contains(pathKey(file)) && !inputs.contains(pathKey(file)) &&
+                        ab::FileSystem::isWithin(resolved, fs::weakly_canonical(buildDir)) && fs::is_regular_file(resolved))
+                        fs::remove(fs::path(file));
+                }
+            }
+            std::string outputList;
+            for (const auto& file : outputPaths)
+                outputList += file + "\n";
+            ab::FileSystem::writeIfChanged(ledger, outputList);
+        }
+
+        void updateGeneratedSources(Workspace& ws, const fs::path& build)
+        {
+            std::map<std::string, std::vector<std::string>> oldOutputs, newOutputs;
+            for (auto& target : ws.m_targets)
+            {
+                if (!target.m_features.contains("outputmanifest"))
+                    continue;
+                auto& old = oldOutputs[target.m_name];
+                old = target.m_features.value("dynamic_outputs", std::vector<std::string>{});
+                for (const auto& output : old)
+                    std::erase(target.m_outputs, output);
+                auto& outputs = newOutputs[target.m_name];
+                for (const auto& item : target.m_features.at("outputmanifest"))
+                {
+                    auto path = item.get<std::string>();
+                    if (path.starts_with("@build/"))
+                        path.erase(0, 7);
+                    const auto manifest = fs::absolute(build / path).lexically_normal();
+                    if (!fs::is_regular_file(manifest))
+                        continue;
+                    const auto files = Json::parse(FileSystem::readAll(manifest));
+                    if (!files.is_array())
+                        throw std::runtime_error("output manifest must contain an array: " + manifest.string());
+                    for (const auto& file : files)
+                    {
+                        const auto output = fs::absolute(manifest.parent_path() / file.get<std::string>()).lexically_normal();
+                        if (!FileSystem::isWithin(output, manifest.parent_path()) || output == manifest.parent_path())
+                            throw std::runtime_error("generated output escapes manifest directory: " + output.string());
+                        const auto relative = output.lexically_relative(fs::absolute(build)).generic_string();
+                        if (std::find(outputs.begin(), outputs.end(), relative) == outputs.end())
+                            outputs.push_back(relative);
+                        if (std::find(target.m_outputs.begin(), target.m_outputs.end(), relative) == target.m_outputs.end())
+                            target.m_outputs.push_back(relative);
+                    }
+                }
+                target.m_features["dynamic_outputs"] = outputs;
+            }
+            for (auto& target : ws.m_targets)
+                for (const auto& spec : target.m_features.value("generatedsources", Json::array()))
+                {
+                    const auto producer = spec.at("producer").get<std::string>();
+                    for (const auto& output : oldOutputs[producer])
+                        std::erase(target.m_sources, "@build/" + output);
+                    const auto extensions = spec.value("extensions", std::vector<std::string>{".cpp", ".c", ".cc", ".cxx", ".cs"});
+                    for (const auto& output : newOutputs[producer])
+                        if (std::find(extensions.begin(), extensions.end(), fs::path(output).extension().string()) != extensions.end() &&
+                            std::find(target.m_sources.begin(), target.m_sources.end(), "@build/" + output) == target.m_sources.end())
+                            target.m_sources.push_back("@build/" + output);
+                }
         }
 
         void saveDynamicSources(const Workspace& ws, const BuildGraph& graph, const fs::path& build, const std::vector<std::string>& hostRoots = {})
@@ -358,13 +459,10 @@ namespace axlum
         }
         for (const auto& name : {"ide", "matrix"})
         {
-            auto* command = app.add_subcommand(
-                name,
-                std::string(name) == "ide" ? "Generate IDE projects from the native target model"
-                                           : "Configure/build isolated configuration and architecture entries"
-            );
+            auto* command =
+                app.add_subcommand(name, std::string(name) == "ide" ? "Generate IDE projects from cached configuration" : "Build existing configured entries");
             command->add_option("-f,--file", options.m_file, "Workspace manifest")->check(CLI::ExistingFile);
-            command->add_option("-B,--build-dir", options.m_buildDir, "Root of isolated entry build directories");
+            command->add_option("-B,--build-dir", options.m_buildDir, "Configured build directory or root of configured entries");
             command->add_option("--arch", options.m_architecture, "Architecture (IDE default)");
             command->add_option("--platform", options.m_platform, "Target platform");
             command->add_option("--toolchain", options.m_toolchain, "Toolchain profile ID");
@@ -379,7 +477,7 @@ namespace axlum
             }
             else
             {
-                command->add_flag("--configure-only", options.m_configureOnly, "Generate entries without building");
+                command->add_flag("--configure-only", options.m_configureOnly, "Validate cached entries without building");
                 command->add_option("-j,--jobs", options.m_execution.m_jobs, "Jobs per matrix entry")->check(CLI::Range(1, 65535));
                 command->add_flag("-v,--verbose", options.m_execution.m_verbose, "Show entry build commands");
                 command->add_flag("--why-rebuild", options.m_execution.m_explain, "Explain entry invalidation");
@@ -726,6 +824,7 @@ namespace axlum
             hostGraph.m_environment = tc.m_environment;
             NinjaBackend::generateNinja(hostGraph, buildDir, self, false, "host-generators.ninja");
             saveDynamicSources(hostWs, hostGraph, hostBuild);
+            ConfigurationCache::save({hostWs, hostTc, hostGraph, hostBuild, config, "host"});
             for (auto& action : hostGraph.m_actions)
             {
                 action.m_environmentIsolated = true;
@@ -799,54 +898,7 @@ namespace axlum
             if (!target.m_hostTool && (target.m_kind == TargetKind::Executable || target.m_managedExecutable))
                 runTargets.push_back(target.m_name);
         FileSystem::writeIfChanged(buildDir / "axlum.run-targets.json", Json(runTargets).dump());
-        // Remove only previously declared, now orphaned files inside this build directory.
-        // Never delete a file reused as an input by the replacement graph.
-        auto pathKey = [](const fs::path& path)
-        {
-            auto key = fs::absolute(path).lexically_normal().generic_string();
-#ifdef _WIN32
-            std::transform(
-                key.begin(),
-                key.end(),
-                key.begin(),
-                [](unsigned char c)
-                {
-                    return static_cast<char>(std::tolower(c));
-                }
-            );
-#endif
-            return key;
-        };
-        std::set<std::string> outputs, inputs, outputPaths;
-        for (const auto& action : graph.m_actions)
-        {
-            for (const auto& file : action.m_outputs)
-            {
-                outputs.insert(pathKey(file));
-                outputPaths.insert(file.generic_string());
-            }
-            for (const auto& file : action.m_inputs)
-                inputs.insert(pathKey(file));
-            for (const auto& file : action.m_orderOnly)
-                inputs.insert(pathKey(file));
-        }
-        const auto ledger = buildDir / "axlum.outputs";
-        if (fs::is_regular_file(ledger))
-        {
-            std::ifstream previous(ledger);
-            std::string file;
-            while (std::getline(previous, file))
-            {
-                const auto resolved = fs::weakly_canonical(file);
-                if (!outputs.contains(pathKey(file)) && !inputs.contains(pathKey(file)) && ab::FileSystem::isWithin(resolved, fs::weakly_canonical(buildDir)) &&
-                    fs::is_regular_file(resolved))
-                    fs::remove(fs::path(file));
-            }
-        }
-        std::string outputList;
-        for (const auto& file : outputPaths)
-            outputList += file + "\n";
-        ab::FileSystem::writeIfChanged(ledger, outputList);
+        saveOutputLedger(graph, buildDir);
         ab::FileSystem::writeIfChanged(packageState, ab::PackageManager::packageInputsFingerprint(ws, tc, config, buildDir));
         ab::FileSystem::writeIfChanged(
             buildDir / "axlum.state",
@@ -863,134 +915,144 @@ namespace axlum
             std::cout << "Configured " << ws.m_name << " (" << tc.m_target << ", " << ab::BuildModel::toString(config) << ")\n"
                       << "Build graph: " << (buildDir / "build.ninja") << "\n"
                       << "Actions: " << graph.m_actions.size() << "\n";
-        return {std::move(ws), std::move(tc), graph, buildDir, config, BuildModel::toString(config) + "-" + opt.m_architecture};
+        IDEContext context{std::move(ws), std::move(tc), graph, buildDir, config, BuildModel::toString(config) + "-" + opt.m_architecture};
+        ConfigurationCache::save(context);
+        return context;
     }
 
     ab::IDEContext Application::refresh(const fs::path& buildDir, const fs::path& self)
     {
-        const auto state = readState(buildDir);
-        Arguments opt;
-        opt.m_file = state.at("manifest");
-        opt.m_config = state.at("config");
-        opt.m_compiler = state.at("compiler");
-        opt.m_toolchain = state.contains("profile") ? state.at("profile") : state.at("toolchain");
-        opt.m_locked = state.contains("locked") && state.at("locked") == "1";
-        opt.m_architecture = state.contains("architecture") ? state.at("architecture") : "x64";
-        opt.m_platform = state.contains("platform") ? state.at("platform") : "";
-        opt.m_preset = state.contains("preset") ? state.at("preset") : "";
-        return configure(opt, buildDir, self, true);
+        // Build-time discovery updates only the cached graph. Never evaluate Lua,
+        // discover SDKs, restore packages, or change configured options here.
+        auto context = ConfigurationCache::load(buildDir);
+        BuildGraph hostGraph;
+        std::vector<std::string> hostRoots;
+        for (const auto& target : context.m_workspace.m_targets)
+            if (target.m_hostTool)
+                hostRoots.push_back(target.m_name);
+        if (!hostRoots.empty())
+        {
+            auto host = ConfigurationCache::load(buildDir / "host");
+            updateGeneratedSources(host.m_workspace, host.m_buildDirectory);
+            host.m_graph = BuildPlanner::planBuild(host.m_workspace, host.m_toolchain, host.m_buildDirectory, host.m_configuration, self);
+            for (auto& action : host.m_graph.m_actions)
+            {
+                action.m_environmentIsolated = true;
+                auto environment = host.m_toolchain.m_environment;
+                for (const auto& [key, value] : action.m_environment)
+                    environment[key] = value;
+                action.m_environment = std::move(environment);
+            }
+            host.m_graph.m_environment = context.m_toolchain.m_environment;
+            NinjaBackend::generateNinja(host.m_graph, buildDir, self, false, "host-generators.ninja");
+            saveDynamicSources(host.m_workspace, host.m_graph, host.m_buildDirectory);
+            ConfigurationCache::save(host);
+            hostGraph = host.m_graph;
+            for (auto& action : hostGraph.m_actions)
+                action.m_owner = "host__" + action.m_owner;
+            hostGraph.m_targetOutputs.clear();
+            hostGraph.m_targetKinds.clear();
+            hostGraph.m_targetDependencies.clear();
+            hostGraph.m_targetAliases.clear();
+        }
+        updateGeneratedSources(context.m_workspace, buildDir);
+        ManagedProjectGenerator::prepareManagedProjects(context.m_workspace, buildDir, self);
+        context.m_graph = BuildPlanner::planBuild(
+            context.m_workspace, context.m_toolchain, buildDir, context.m_configuration, self, hostGraph.m_actions.empty() ? nullptr : &hostGraph
+        );
+        NinjaBackend::generateNinja(context.m_graph, buildDir, self, false, "generators.ninja");
+        saveDynamicSources(context.m_workspace, context.m_graph, buildDir, hostRoots);
+        NinjaBackend::generateNinja(context.m_graph, buildDir, self);
+        NinjaBackend::generateCompileCommands(context.m_graph, buildDir);
+        IDEGenerator::writeArtifactIndex(context.m_graph, buildDir);
+        saveOutputLedger(context.m_graph, buildDir);
+        ConfigurationCache::save(context);
+        return context;
     }
 
     int Application::configureEntries(const Arguments& options, const fs::path& self)
     {
         const auto root = fs::absolute(options.m_buildDir).lexically_normal();
-        const auto metadata =
-            ab::ManifestLoader::loadManifest(options.m_file, ab::Configuration{"__inspect"}, root, options.m_architecture, options.m_platform);
-        std::vector<ab::BuildPreset> entries;
-        if (!options.m_presets.empty() || (options.m_command == "matrix" && !metadata.m_presets.empty()))
+        if (!options.m_optionValues.empty() || options.m_locked || !options.m_toolchain.empty() || !options.m_platform.empty())
+            throw std::runtime_error("configuration options belong to configure; ide/matrix reuse configured entries");
+        std::vector<IDEContext> contexts;
+        if (fs::is_regular_file(root / "axlum.context.json"))
+            contexts.push_back(ConfigurationCache::load(root));
+        else if (fs::is_directory(root))
         {
-            for (const auto& preset : metadata.m_presets)
-                if (options.m_presets.empty() || std::find(options.m_presets.begin(), options.m_presets.end(), preset.m_name) != options.m_presets.end())
-                    entries.push_back(preset);
-            for (const auto& name : options.m_presets)
-                if (std::none_of(
-                        entries.begin(),
-                        entries.end(),
-                        [&](const auto& p)
-                        {
-                            return p.m_name == name;
-                        }
-                    ))
-                    throw std::runtime_error("unknown preset: " + name);
-        }
-        else
-        {
-            const auto configs = metadata.m_configurations.empty() ? std::vector<ab::Configuration>{ab::Configuration::s_debug, ab::Configuration::s_release}
-                                                                   : metadata.m_configurations;
-            const auto architectures = options.m_command == "matrix" && !metadata.m_architectures.empty()
-                                           ? metadata.m_architectures
-                                           : std::vector<std::string>{ab::BuildModel::normalizeArchitecture(options.m_architecture)};
-            for (const auto& config : configs)
-                for (const auto& arch : architectures)
-                    entries.push_back(
-                        {ab::BuildModel::toString(config) + "-" + arch, ab::BuildModel::toString(config), arch, options.m_platform, options.m_toolchain, "auto"}
-                    );
-        }
-        std::vector<ab::IDEContext> contexts;
-        for (const auto& entry : entries)
-        {
-            Arguments opt = options;
-            opt.m_preset.clear();
-            opt.m_optionValues.clear();
-            for (const auto& [key, value] : entry.m_options)
-                opt.m_optionValues.push_back(key + "=" + value);
-            opt.m_optionValues.insert(opt.m_optionValues.end(), options.m_optionValues.begin(), options.m_optionValues.end());
-            opt.m_config = entry.m_configuration;
-            opt.m_architecture = entry.m_architecture;
-            opt.m_platform = entry.m_platform;
-            opt.m_toolchain = entry.m_toolchain;
-            opt.m_compiler = entry.m_compiler;
-            const auto directory = root / entry.m_name;
-            auto context = configure(opt, directory, self, false, true);
-            context.m_label = entry.m_name;
-            if (context.m_workspace.m_targets.empty())
+            std::vector<fs::path> entries;
+            for (const auto& entry : fs::directory_iterator(root))
+                if (entry.is_directory() && entry.path().filename() != "host" && fs::is_regular_file(entry.path() / "axlum.context.json"))
+                    entries.push_back(entry.path());
+            std::sort(entries.begin(), entries.end());
+            for (const auto& entry : entries)
             {
-                std::cout << "Skipped " << entry.m_name << ": no supported targets\n";
-                continue;
+                if (!options.m_presets.empty() &&
+                    std::find(options.m_presets.begin(), options.m_presets.end(), entry.filename().string()) == options.m_presets.end())
+                    continue;
+                contexts.push_back(ConfigurationCache::load(entry));
             }
-            contexts.push_back(std::move(context));
-            if (options.m_command == "matrix" && !options.m_configureOnly)
+        }
+        if (contexts.empty())
+            throw std::runtime_error("no configured entries; run configure -B " + root.string() + " first");
+        for (const auto& preset : options.m_presets)
+            if (std::none_of(
+                    contexts.begin(),
+                    contexts.end(),
+                    [&](const auto& c)
+                    {
+                        return c.m_label == preset || c.m_buildDirectory.filename() == preset;
+                    }
+                ))
+                throw std::runtime_error("preset is not configured: " + preset);
+        if (options.m_command == "matrix")
+        {
+            if (options.m_configureOnly)
+                return 0;
+            for (const auto& context : contexts)
             {
-                std::vector<std::string> command = {self.string(), "build", "-B", directory.string()};
-                if (!options.m_target.empty())
-                    command.insert(command.end(), {"-t", options.m_target});
-                if (options.m_execution.m_jobs)
-                    command.insert(command.end(), {"-j", std::to_string(options.m_execution.m_jobs)});
-                if (options.m_execution.m_verbose)
-                    command.push_back("--verbose");
-                if (options.m_execution.m_explain)
-                    command.push_back("--why-rebuild");
-                if (options.m_execution.m_timing)
-                    command.push_back("--timing");
-                const auto rc = ab::Process::run(command);
-                if (rc != 0)
+                const auto rc = BuildExecutor::executeNinja(
+                    context.m_buildDirectory,
+                    context.m_toolchain.m_ninja,
+                    "build",
+                    options.m_target.empty() ? std::vector<std::string>{} : std::vector<std::string>{options.m_target},
+                    options.m_execution
+                );
+                if (rc)
                     return rc;
             }
+            return 0;
         }
-        if (options.m_command == "ide")
+        const auto output = options.m_output.empty() ? root / "ide" : fs::absolute(options.m_output);
+        // The editor explicitly configures the selected entry, then regenerates
+        // projects separately using the updated cache.
+        for (auto& context : contexts)
         {
-            const auto output = options.m_output.empty() ? root / "ide" : fs::absolute(options.m_output);
-            if (!contexts.empty())
-            {
-                std::vector<std::string> replay = {
-                    "ide",
-                    "-f",
-                    fs::absolute(options.m_file).lexically_normal().string(),
-                    "-B",
-                    root.string(),
-                    "-o",
-                    output.string(),
-                    "--format",
-                    options.m_format,
-                    "--arch",
-                    options.m_architecture
-                };
-                for (const auto& preset : options.m_presets)
-                    replay.insert(replay.end(), {"--preset", preset});
-                for (const auto& option : options.m_optionValues)
-                    replay.insert(replay.end(), {"--option", option});
-                if (!options.m_platform.empty())
-                    replay.insert(replay.end(), {"--platform", options.m_platform});
-                if (!options.m_toolchain.empty())
-                    replay.insert(replay.end(), {"--toolchain", options.m_toolchain});
-                if (options.m_locked)
-                    replay.push_back("--locked");
-                contexts.front().m_regenerateArguments = std::move(replay);
-                contexts.front().m_regenerateDirectory = fs::current_path();
-            }
-            ab::IDEGenerator::generateIDE(contexts, output, self, options.m_format);
-            std::cout << "Generated " << options.m_format << " projects: " << output << '\n';
+            const auto state = readState(context.m_buildDirectory);
+            context.m_regenerateArguments = {
+                "configure",
+                "-f",
+                context.m_workspace.m_manifest.string(),
+                "-B",
+                context.m_buildDirectory.string(),
+                "--config",
+                BuildModel::toString(context.m_configuration),
+                "--arch",
+                context.m_toolchain.m_architecture,
+                "--compiler",
+                state.at("compiler")
+            };
+            for (const auto& [key, flag] :
+                 std::vector<std::pair<std::string, std::string>>{{"profile", "--toolchain"}, {"platform", "--platform"}, {"preset", "--preset"}})
+                if (state.contains(key) && !state.at(key).empty())
+                    context.m_regenerateArguments.insert(context.m_regenerateArguments.end(), {flag, state.at(key)});
+            context.m_regenerateDirectory = context.m_workspace.m_root;
         }
+        contexts.front().m_regenerateIDEArguments = {"ide", "-B", root.string(), "-o", output.string(), "--format", options.m_format};
+        for (const auto& preset : options.m_presets)
+            contexts.front().m_regenerateIDEArguments.insert(contexts.front().m_regenerateIDEArguments.end(), {"--preset", preset});
+        IDEGenerator::generateIDE(contexts, output, self, options.m_format);
+        std::cout << "Generated " << options.m_format << " projects from cached configuration: " << output << '\n';
         return 0;
     }
 
@@ -1153,7 +1215,7 @@ namespace axlum
             {
                 const auto directory = fs::absolute(args[2]).lexically_normal();
                 if (configureInputsChanged(directory))
-                    refresh(directory, currentExecutable(argv[0]));
+                    throw std::runtime_error("configuration inputs changed; run configure -B " + directory.string());
                 while (prepareDynamicSources(directory, readState(directory).at("ninja")))
                     refresh(directory, currentExecutable(argv[0]));
                 return 0;
@@ -1263,7 +1325,8 @@ namespace axlum
             {
                 if (!opt.m_sourceDir.empty())
                     opt.m_file = (fs::absolute(opt.m_sourceDir) / opt.m_file).string();
-                auto ws = ManifestLoader::loadManifest(opt.m_file, Configuration{"__inspect"}, buildDir);
+                auto ws = fs::is_regular_file(buildDir / "axlum.context.json") ? ConfigurationCache::load(buildDir).m_workspace
+                                                                               : ManifestLoader::loadManifest(opt.m_file, Configuration{"__inspect"}, buildDir);
                 auto schema = ws.m_features.value("options", nlohmann::json::object());
                 if (opt.m_json)
                     std::cout << schema.dump(2) << '\n';
@@ -1277,7 +1340,7 @@ namespace axlum
             {
                 if (!opt.m_noBuild)
                 {
-                    auto context = refresh(buildDir, currentExecutable(argv[0]));
+                    auto context = ConfigurationCache::load(buildDir);
                     auto rc = BuildExecutor::executeNinja(buildDir, context.m_toolchain.m_ninja, "build", {}, opt.m_execution);
                     if (rc)
                         return rc;
@@ -1370,7 +1433,7 @@ namespace axlum
             std::optional<ab::IDEContext> prepared;
             if (opt.m_command == "graph" || opt.m_command == "publish" || opt.m_command == "install" || opt.m_command == "run")
             {
-                prepared = refresh(buildDir, currentExecutable(argv[0]));
+                prepared = ConfigurationCache::load(buildDir);
                 state = readState(buildDir);
             }
             else if (
@@ -1378,8 +1441,7 @@ namespace axlum
                 (!state.contains("schema") || state.at("schema") != "2" || !state.contains("ninja") || !fs::is_regular_file(state.at("ninja")))
             )
             {
-                refresh(buildDir, currentExecutable(argv[0]));
-                state = readState(buildDir);
+                throw std::runtime_error("build configuration is incompatible; run configure first");
             }
             (void)state;
             const auto ninja = state.contains("ninja") ? state.at("ninja") : ab::Process::findExecutable("ninja");

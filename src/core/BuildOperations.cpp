@@ -274,7 +274,8 @@ namespace axlum
                     overrides,
                     execution,
                     false,
-                    &directory
+                    &directory,
+                    request.m_install || request.m_noBuild
                 );
                 if (rc)
                     return rc;
@@ -612,6 +613,7 @@ namespace axlum
                   "generators.ninja",
                   "host-generators.ninja",
                   "axlum.run-targets.json",
+                  "axlum.context.json",
                   "axlum.configure-inputs.json",
                   "axlum.dynamic.json",
                   "axlum.option-schema.json",
@@ -622,7 +624,7 @@ namespace axlum
                   "axlum.artifacts.json",
                   "axlum.state"})
                 removeOwned(directory / name, directory, request.m_dryRun);
-            for (const auto& name : {"generators.ninja", "axlum.dynamic.json", "axlum.packages", "axlum.package-inputs.json"})
+            for (const auto& name : {"generators.ninja", "axlum.dynamic.json", "axlum.packages", "axlum.package-inputs.json", "axlum.context.json"})
                 removeOwned(directory / "host" / name, directory, request.m_dryRun);
             // Configuration cleanup keeps valid object dependency history and the
             // ownership ledger so reconfigure can reuse outputs and remove orphans.

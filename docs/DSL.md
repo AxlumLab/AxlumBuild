@@ -31,7 +31,7 @@ target("GameScripts")
 - `include("relative.lua")` uses Rhodium's include handling: paths are relative to the including script and must stay in the workspace. Recursive/missing includes fail.
 - `when("windows", function() ... end)` uses Rhodium's platform conditions (`all`, `*`, `unix`, `windows`, `linux`, `mac`, `macos`, `android`, `ios`). Conditions use the selected target platform; actual builds still require a supported toolchain.
 - File and include paths are relative to the workspace root, including declarations in included scripts.
-- `files({...})` accepts explicit paths and workspace-relative globs: `*` and `?` stay in one directory, `**` crosses directories, `**/` can match zero directories. Matches are sorted and deduplicated within each source group. Globs skip `.git`, `.axlum`, `.cache`, `.rhodium`, `.tpkg`, `build`, `obj` and `bin` directories. Generated paths use explicit `@build/...` values. Matches are refreshed automatically before each build.
+- `files({...})` accepts explicit paths and workspace-relative globs: `*` and `?` stay in one directory, `**` crosses directories, `**/` can match zero directories. Matches are sorted and deduplicated within each source group. Globs skip `.git`, `.axlum`, `.cache`, `.rhodium`, `.tpkg`, `build`, `obj` and `bin` directories. Generated paths use explicit `@build/...` values. Matches are refreshed by explicit configure.
 - `removefiles("src/tests/**.cpp")` (or a string array) excludes files from the current target/module after expansion, including files added later in the script. Overlapping glob/explicit matches in a source group are deduplicated by normalized path.
 - Headers in native `files` lists do not become compile actions. C# targets select `.cs` files. Native compilation supports `.c`, `.cc`, `.cpp`, `.cxx` and `.C`.
 
@@ -178,7 +178,7 @@ target("App")
 - Package recipe fields (`source`, `source_type`, `ref`, `path`, `build`, `cmake`, `artifacts`, `dependencies`, archive hashes/patches, etc.) are parsed by Rhodium. `version` is an AxlumBuild convenience alias for `ref`; conflicting values fail. Git/source declarations need explicit sources. Rhodium has no registry or semantic-version solver.
 - `packages` gives the current target a private package interface. `public_packages` also exposes headers/defines to consumers. Static-library link dependencies propagate even when compile settings are private. `dependencies` names other declared packages and supplies their transitive interfaces; it does not invent missing recipes or CMake targets inside a package build.
 - Missing packages, duplicate names/scope attachments, invalid recipes and dependency cycles fail. Native packages cannot be attached to managed targets; use MSBuild/NuGet for managed dependencies.
-- `configure` restores source/artifacts using Rhodium. Each build (including direct Ninja execution) checks the configuration and restores changed packages before executing actions; `graph` also refreshes the configuration. Lua/includes, globs and local package source changes do not require a separate configure invocation.
+- `configure` restores source/artifacts using Rhodium. Other commands reuse the configured snapshot. Changed Lua/includes, glob membership or local package sources require an explicit configure; `graph` only reads the cache.
 - `configure --locked` requires dependency inputs to match Rhodium's selected `rhodium.lock.toml` (or an existing legacy `tpkg.lock.toml`). Local sources remain mutable: locked mode validates recipe/toolchain/configuration identity, not local file contents. Commit lockfiles, not `.rhodium/` caches. Existing `.tpkg/` state is honored by Rhodium.
 - Package builds use the same discovered Rhodium profile and configuration as native actions. Windows packages match their consumers' Static/Dynamic CRT policy, and conflicting consumers or recipes are rejected. Debug/Release artifacts have distinct identities. This is not a complete compiler/SDK ABI compatibility validator.
 - Structured include dirs, defines, library dirs, concrete library files, system libraries and Apple frameworks enter the native graph. Exported package DLL/SO runtime files are copied beside consuming native binaries. Framework metadata is supported on macOS/iOS toolchains.
@@ -241,8 +241,8 @@ values are checked, and duplicate/unknown options fail. A path is a path string,
 not a promise that a directory already exists. `configure --option NAME=VALUE`
 overrides a preset; presets override saved choices; saved choices override defaults.
 Only explicit choices are saved in `<B>/axlum.options.json`, so changing a default
-still affects builds without an explicit override. Automatic refresh preserves
-choices. Failed configuration restores previous choices. `options -S . -B build
+takes effect at the next explicit configure when there is no explicit override.
+Cached commands preserve configured choices. Failed configuration restores previous choices. `options -S . -B build
 --json` lists declarations, descriptions, choices and effective values without
 restoring packages. Matrix/preset entries preserve independent choices.
 
@@ -289,7 +289,7 @@ dependencies automatically. `generatedfile` checks the producer's declared outpu
 ownership. Output directories and platform executable suffixes need no duplication.
 
 `inputset(root, patterns)` tracks sorted file membership as well as file contents;
-changes are discovered on automatic refresh. `byproducts` adds required owned
+changes are discovered on explicit configure. `byproducts` adds required owned
 outputs, checked and cleaned like `outputs`. `workingdir` and `environment` apply
 to a target's actions; maps overlay the discovered toolchain environment.
 
@@ -438,7 +438,7 @@ local names = list.prefix("generated/", {"One.cpp", "Two.cpp"})
 workspace-relative files. Patterns and exclusions each accept a string or array.
 It uses the same wildcard and build-directory exclusion rules as `files`.
 Explicit missing files are errors; unmatched wildcard patterns return an empty
-array. Scan membership is refreshed by the normal build configuration check.
+array. Scan membership is refreshed by explicit configure.
 `files` already accepts glob patterns directly; use `matchfiles` when the resulting
 list is also needed by Lua code or another API.
 

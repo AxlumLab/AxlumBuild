@@ -782,6 +782,7 @@ namespace axlum
                      {"buildDirectory", c.m_buildDirectory.string()},
                      {"intelliSense", configs[i]},
                      {"startupTarget", startupTarget(c)},
+                     {"configureArgs", c.m_regenerateArguments},
                      {"problemMatcher", c.m_toolchain.m_kind == CompilerKind::MSVC ? "$msCompile" : "$gcc"},
                      {"targets", targets}}
                 );
@@ -795,7 +796,10 @@ namespace axlum
                     {"sourceDirectory", contexts.front().m_workspace.m_root.string()},
                     {"executable", self.string()},
                     {"entries", editorEntries},
-                    {"reconfigure", {{"args", contexts.front().m_regenerateArguments}, {"cwd", contexts.front().m_regenerateDirectory.string()}}}
+                    {"reconfigure",
+                     {{"args", contexts.front().m_regenerateArguments},
+                      {"afterArgs", contexts.front().m_regenerateIDEArguments},
+                      {"cwd", contexts.front().m_regenerateDirectory.string()}}}
                 }.dump(2) +
                     "\n"
             );

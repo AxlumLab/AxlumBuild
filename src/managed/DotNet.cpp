@@ -162,7 +162,8 @@ namespace axlum
         const PublishOptions& overrides,
         const ExecutionOptions& execution,
         bool buildFirst,
-        fs::path* publishedDirectory
+        fs::path* publishedDirectory,
+        bool noBuild
     )
     {
         using Json = nlohmann::json;
@@ -273,6 +274,8 @@ namespace axlum
                 std::string("-p:PublishTrimmed=") + (trimmed ? "true" : "false"),
                 std::string("-p:PublishSingleFile=") + (single ? "true" : "false")
             };
+            if (noBuild)
+                command.insert(command.end(), {"--no-build", "--no-restore"});
             if (t.m_features.contains("managedsources"))
                 command.push_back("-p:CustomAfterMicrosoftCommonTargets=" + fs::absolute(build / "dotnet" / t.m_name / "GeneratedSources.targets").string());
             if (!rid.empty())
