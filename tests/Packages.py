@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix="axlum-packages-") as s_tmp:
     assert "restore failed" in run(*s_command, "--locked", ok=False)
     s_log = run(*s_command)
     assert "[rhodium]" in s_log, s_log
-    assert (s_ws / "tpkg.lock.toml").exists()
+    assert (s_ws / "rhodium.lock.toml").exists()
     assert (s_ws / ".rhodium" / "artifacts").is_dir()
     s_db = json.loads((s_build / "compile_commands.json").read_text())
     assert len(s_db) == 2
@@ -83,6 +83,11 @@ with tempfile.TemporaryDirectory(prefix="axlum-packages-") as s_tmp:
     )
     assert run(s_exe).strip() == "package result=42"
     assert "no work to do" in run(s_cli, "build", "-B", s_build).lower()
+    # Existing tpkg lockfiles remain supported when the new filename is absent.
+    (s_ws / "rhodium.lock.toml").rename(s_ws / "tpkg.lock.toml")
+    run(*s_command, "--locked")
+    assert (s_ws / "tpkg.lock.toml").is_file()
+    (s_ws / "tpkg.lock.toml").rename(s_ws / "rhodium.lock.toml")
     run(*s_command, "--locked")
     run(s_cli, "graph", "-B", s_build)
     assert not list((s_ws / "packages" / "math").glob("CMakeCache.txt"))
@@ -99,7 +104,7 @@ with tempfile.TemporaryDirectory(prefix="axlum-packages-") as s_tmp:
     run(s_cli, "configure", "-f", s_manifest, "-B", s_release, "--config", "release")
     run(s_cli, "build", "-B", s_release)
     assert run(s_release / "bin" / s_exe.name).strip() == "package result=43"
-    s_lock = (s_ws / "tpkg.lock.toml").read_text()
+    s_lock = (s_ws / "rhodium.lock.toml").read_text()
     assert "debug" in s_lock and "release" in s_lock
     run(
         s_cli, "graph", "-B", s_build
@@ -147,7 +152,7 @@ with tempfile.TemporaryDirectory(prefix="axlum-packages-") as s_tmp:
     run(*s_gitcommand)
     run(s_cli, "build", "-B", s_gitbuild)
     run(s_gitbuild / "bin" / ("GitApp.exe" if os.name == "nt" else "GitApp"))
-    assert s_commit in (s_gitws / "tpkg.lock.toml").read_text()
+    assert s_commit in (s_gitws / "rhodium.lock.toml").read_text()
     run(*s_gitcommand, "--locked")
     s_gitmanifest.write_text(
         s_gitmanifest.read_text().replace(

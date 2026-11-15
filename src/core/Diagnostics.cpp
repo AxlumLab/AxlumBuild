@@ -249,6 +249,37 @@ namespace axlum
         const ExecutionOptions& options
     )
     {
+#ifdef _WIN32
+        // VS may build independent Makefile projects concurrently. Serialize the
+        // shared Ninja log/output directory, while Ninja still parallelizes actions.
+        auto key = fs::weakly_canonical(directory).generic_string();
+        std::transform(
+            key.begin(),
+            key.end(),
+            key.begin(),
+            [](unsigned char c)
+            {
+                return static_cast<char>(std::tolower(c));
+            }
+        );
+
+        struct BuildLock
+        {
+            HANDLE handle;
+
+            ~BuildLock()
+            {
+                ReleaseMutex(handle);
+                CloseHandle(handle);
+            }
+        } lock{CreateMutexA(nullptr, FALSE, ("Local\\AxlumBuild-" + FileSystem::shortHash(key)).c_str())};
+
+        if (!lock.handle)
+            throw std::runtime_error("cannot create build directory lock");
+        const auto wait = WaitForSingleObject(lock.handle, INFINITE);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED)
+            throw std::runtime_error("cannot lock build directory");
+#endif
         CommandSession session(command, directory, options, targets);
         const auto clean = [&]
         {
@@ -310,6 +341,7 @@ namespace axlum
                 args.push_back("-n");
             args.insert(args.end(), targets.begin(), targets.end());
             std::map<std::string, std::string> environment;
+            environment["AXLUM_BUILD_TARGETS"] = Json(targets).dump();
             if (command == "rebuild")
             {
                 environment["AXLUM_DOTNET_REBUILD"] = "1";

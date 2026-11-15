@@ -54,7 +54,9 @@ Managed actions always let MSBuild check incremental state. Unchanged binaries
 preserve the target stamp, keeping downstream native actions incremental. `rebuild`
 also requests the SDK's Rebuild target. Native dependencies and code generation
 complete before the managed build. Complex project properties/imports belong in
-an existing csproj rather than a second partial MSBuild implementation.
+an existing csproj. `managedsources` adds a generated, project-scoped Compile
+Remove/Include import for generated binding files without editing that csproj;
+see DSL.md.
 
 Generated projects include build-directory props selecting the same isolated
 artifacts layout for CLI and IDE builds. Ordinary SDK/IDE builds invoke the common

@@ -4,9 +4,9 @@
 
 `codegen` is the only common mechanism. It accepts a concrete host executable, argv array, source/build inputs, build outputs and optional GCC-style depfile. It is **not** aware of reflection declarations, ANTLR, ReflectKit, a C ABI, NativeAOT calling convention or C# binding metadata.
 
-When adding Iridiumc, use a manifest target with `tool = "iridiumc"` (or an absolute tool path), enumerate every user-visible generated file in `outputs`, and model source inputs and codegen dependencies. If the generator produces variable output sets, introduce a stable output manifest and a graph reconfiguration mechanism rather than suppressing validation.
+When adding Iridiumc, use a manifest target with `tool = "iridiumc"` (or an absolute tool path), enumerate every user-visible generated file in `outputs`, and model source inputs and codegen dependencies. For variable output sets use `outputmanifest` and `generatedsources`; configure/refresh builds producers before planning consumers.
 
-A host-built generator may use `tool = "@target/Iridiumc"` and a direct dependency. Building a host executable while cross-compiling for a different target is **not yet supported**. Do not mark cross-compiling host tools as implemented.
+A host-built generator may use `tool = "@target/Iridiumc"` and a direct dependency. `hosttool(true)` creates an independent host build context and joins its actions into the target graph; see [DSL.md](DSL.md).
 
 ## Rhodium
 

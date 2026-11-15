@@ -19,6 +19,8 @@ namespace axlum
         fs::path m_buildDirectory;
         Configuration m_configuration;
         std::string m_label;
+        std::vector<std::string> m_regenerateArguments;
+        fs::path m_regenerateDirectory;
     };
 
     using IDEProjectCustomizer = std::function<void(const IDEContext&, const std::string& target, const std::string& format, IDECustomization&)>;

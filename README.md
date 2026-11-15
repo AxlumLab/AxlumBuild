@@ -201,6 +201,11 @@ Makefile sln/vcxproj, Xcode external-build projects/schemes, and Android Studio
 Gradle tasks plus an optional NDK/CMake library bridge. All use the shared target
 model and AxlumBuild/Ninja execution. See [IDE documentation](docs/IDE_PROJECTS.md).
 
+The [VS Code extension](editors/vscode/README.md) is maintained in this repository.
+Its left Axlum Build sidebar selects configurations, separates build/run targets,
+reconfigures projects and checks debugger availability. Build a local VSIX with
+`python editors/vscode/package.py`; extension CI tests and packages it separately.
+
 `workspace_reference` composes manifests through alias-qualified native targets.
 `prebuild` and `postbuild` use declared inputs/outputs for incremental execution.
 Named configurations, presets, x64/ARM64 selection and isolated matrix directories

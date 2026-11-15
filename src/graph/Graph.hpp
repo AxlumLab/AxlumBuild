@@ -14,15 +14,18 @@ namespace axlum
 {
     struct Action
     {
+        std::map<std::string, std::string> m_environment;
         std::string m_name;
         std::string m_owner;
         std::vector<std::string> m_argv; // executable + arguments, never an unparsed shell string
         fs::path m_workingDirectory;
         std::vector<fs::path> m_inputs;
         std::vector<fs::path> m_outputs;
+        std::vector<fs::path> m_dynamicOutputs;
         std::vector<fs::path> m_orderOnly;
         fs::path m_depfile;
         std::string m_depsStyle; // gcc | msvc-json | msvc | empty
+        bool m_environmentIsolated = false;
         bool m_always = false;
         bool m_restat = false;
         bool m_rsp = false; // argv[0] executes with response file containing argv[1:]
@@ -48,6 +51,13 @@ namespace axlum
         BuildPlanner() = delete;
 
       public:
-        static BuildGraph planBuild(const Workspace& ws, const Toolchain& tc, const fs::path& buildDir, Configuration cfg, const fs::path& self);
+        static BuildGraph planBuild(
+            const Workspace& ws,
+            const Toolchain& tc,
+            const fs::path& buildDir,
+            Configuration cfg,
+            const fs::path& self,
+            const BuildGraph* hostGraph = nullptr
+        );
     };
 } // namespace axlum

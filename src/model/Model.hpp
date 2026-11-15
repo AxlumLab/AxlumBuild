@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -40,6 +41,7 @@ namespace axlum
     struct BuildPreset
     {
         std::string m_name, m_configuration = "Debug", m_architecture = "x64", m_platform, m_toolchain, m_compiler = "auto";
+        std::map<std::string, std::string> m_options;
     };
 
     struct WorkspaceReference
@@ -66,6 +68,8 @@ namespace axlum
         std::vector<std::string> m_privateIncludes;
         std::vector<std::string> m_publicDefines;
         std::vector<std::string> m_privateDefines;
+        std::vector<std::string> m_forceIncludes;
+        std::string m_charset;
         std::vector<std::string> m_cFlags;
         std::vector<std::string> m_cxxFlags;
         std::string m_cppStandard = "c++20";
@@ -159,6 +163,9 @@ namespace axlum
 
     struct Target
     {
+        nlohmann::json m_features = nlohmann::json::object();
+        bool m_hostTool = false;
+        fs::path m_hostArtifact;
         std::string m_name;
         fs::path m_sourceRoot;
         std::vector<std::string> m_platforms, m_architectures, m_configurations;
@@ -201,6 +208,8 @@ namespace axlum
 
     struct Workspace
     {
+        std::vector<fs::path> m_configurationRoots, m_localPackageRoots;
+        nlohmann::json m_features = nlohmann::json::object();
         std::string m_name;
         std::map<std::string, IDECustomization> m_ide;
         fs::path m_manifest;

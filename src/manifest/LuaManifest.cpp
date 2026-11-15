@@ -5,6 +5,7 @@
  */
 
 #include "core/Process.hpp"
+#include "manifest/Features.hpp"
 #include "manifest/Manifest.hpp"
 #include "packages/PackageManifest.hpp"
 #include <algorithm>
@@ -443,7 +444,15 @@ namespace axlum
                 preset.m_name = name;
                 for (auto [key, value] : options)
                 {
-                    const auto field = readText(key), text = readText(value);
+                    const auto field = readText(key);
+                    if (field == "options")
+                    {
+                        const auto presetValues = jsonValue(value);
+                        for (const auto& [k, v] : presetValues.items())
+                            preset.m_options[k] = v.is_string() ? v.get<std::string>() : v.dump();
+                        continue;
+                    }
+                    const auto text = readText(value);
                     if (field == "config")
                         preset.m_configuration = BuildModel::toString(BuildModel::parseConfiguration(text));
                     else if (field == "architecture")
@@ -525,6 +534,45 @@ namespace axlum
                 throw std::runtime_error("setting belongs to target scope, not module scope");
             return target();
         };
+        lua.set_function(
+            "ide_target",
+            [&](sol::table values)
+            {
+                if (!enabled)
+                    return;
+                auto& settings = targetSetting().m_features["ide"];
+                if (settings.is_null())
+                    settings = nlohmann::json::object();
+                for (const auto& [key, value] : values)
+                {
+                    const auto name = readText(key);
+                    if (name == "visible" || name == "startup")
+                    {
+                        if (value.get_type() != sol::type::boolean)
+                            throw std::runtime_error("ide_target " + name + " requires a boolean");
+                        settings[name] = value.as<bool>();
+                    }
+                    else if (name == "group" || name == "display_name")
+                    {
+                        auto text = readText(value);
+                        if (text.empty() || text.find_first_of("\"\r\n\t") != std::string::npos)
+                            throw std::runtime_error("invalid ide_target " + name);
+                        if (name == "group")
+                        {
+                            std::replace(text.begin(), text.end(), '\\', '/');
+                            if (text.front() == '/' || text.back() == '/' || text.find("//") != std::string::npos)
+                                throw std::runtime_error("ide_target group requires a relative folder path");
+                            for (const auto& part : fs::path(text))
+                                if (part == "." || part == ".." || part.string().find(':') != std::string::npos)
+                                    throw std::runtime_error("invalid ide_target group component");
+                        }
+                        settings[name] = text;
+                    }
+                    else
+                        throw std::runtime_error("unknown ide_target field: " + name);
+                }
+            }
+        );
         lua.set_function(
             "ide_customize",
             [&](const std::string& format, sol::table values)
@@ -1728,12 +1776,102 @@ namespace axlum
         rhodium["require"] = lua["require"];
         rhodium["require_local"] = lua["require_local"];
         rhodium["dependency_overrides"] = lua["dependency_overrides"];
+        lua.set_function(
+            "__axlum_host_program",
+            [&](sol::object object)
+            {
+                auto spec = jsonValue(object);
+                auto requested = spec.value("path", spec.at("name").get<std::string>());
+                auto path = Process::findExecutable(requested);
+                if (path.empty())
+                    throw std::runtime_error("required host program not found: " + requested);
+                if (spec.contains("version_pattern"))
+                {
+                    std::string result;
+                    std::vector<std::string> command = {path};
+                    for (auto& a : spec.value("version_args", nlohmann::json::array({"--version"})))
+                        command.push_back(a.get<std::string>());
+                    if (Process::run(
+                            command,
+                            ws.m_root,
+                            {},
+                            [&](std::string_view s)
+                            {
+                                result += s;
+                            }
+                        ) != 0 ||
+                        !std::regex_search(result, std::regex(spec["version_pattern"].get<std::string>())))
+                        throw std::runtime_error("host program version check failed: " + requested);
+                }
+                ws.m_features["host_programs"].push_back({{"name", spec.at("name")}, {"path", path}});
+                return path;
+            }
+        );
+        const auto optionValues = DslFeatures::readOptions(buildDirectory);
+        lua.set_function("matchfiles", [&](sol::object patterns, sol::optional<sol::object> exclusions) {
+            auto matches = expandFiles(ws.m_root, readList(patterns), buildDirectory);
+            if (exclusions && exclusions->get_type() != sol::type::lua_nil)
+                for (auto pattern : readList(*exclusions))
+                {
+                    std::replace(pattern.begin(), pattern.end(), '\\', '/');
+                    const auto matcher = glob(pattern);
+                    std::erase_if(matches, [&](const auto& file) { return std::regex_match(file, matcher); });
+                }
+            std::sort(matches.begin(), matches.end());
+            return sol::as_table(matches);
+        });
+        lua.set_function(
+            "__axlum_feature",
+            [&](const std::string& name, sol::object object) -> sol::object
+            {
+                auto value = jsonValue(object);
+                if (name == "option")
+                {
+                    const auto resolved = DslFeatures::option(ws, value, optionValues);
+                    if (resolved.is_boolean())
+                        return sol::make_object(lua, resolved.get<bool>());
+                    return sol::make_object(lua, resolved.get<std::string>());
+                }
+                if (!enabled)
+                    return sol::make_object(lua, sol::nil);
+                if (name == "hosttool")
+                    targetSetting().m_hostTool = value.get<bool>();
+                else if (name == "forceincludes")
+                {
+                    const auto values = readList(object);
+                    append(compile().m_forceIncludes, values);
+                }
+                else if (name == "charset")
+                    compile().m_charset = value.get<std::string>();
+                else if (
+                    name == "workingdir" || name == "environment" || name == "byproducts" || name == "inputset" || name == "outputmanifest" ||
+                    name == "generatedsources" || name == "deployfiles" || name == "managedsources"
+                )
+                {
+                    targetSetting().m_features[name].push_back(value);
+                }
+                else
+                {
+                    ws.m_features[name].push_back(value);
+                    if (name == "template")
+                        return sol::make_object(lua, "_template_" + FileSystem::shortHash(value.at("output").get<std::string>()));
+                }
+                return sol::make_object(lua, sol::nil);
+            }
+        );
+        auto prelude = lua.safe_script(DslFeatures::luaPrelude(), sol::script_pass_on_error);
+        if (!prelude.valid())
+        {
+            sol::error error = prelude;
+            throw std::runtime_error(error.what());
+        }
         const auto result = lua.safe_script_file(ws.m_manifest.string(), sol::script_pass_on_error);
         if (!result.valid())
         {
             sol::error error = result;
             throw std::runtime_error(error.what());
         }
+        DslFeatures::finalize(ws, buildDirectory, config);
         if (diagnostics.m_failed)
             throw std::runtime_error("Lua manifest contains Rhodium DSL errors");
         if (config.m_name != "__inspect" && !ws.m_configurations.empty() &&
@@ -1813,7 +1951,8 @@ namespace axlum
                                 return dep.name == name;
                             }
                         ))
-                        throw std::runtime_error("undeclared package: " + name);
+                        if (!DslFeatures::systemPackage(ws, name))
+                            throw std::runtime_error("undeclared package: " + name);
                 }
             for (const auto& ref : t.m_references)
             {

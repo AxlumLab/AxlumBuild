@@ -310,7 +310,7 @@ namespace axlum
                 }
             if (!target)
                 continue;
-            const auto base = normalized(context.m_workspace.m_root / policy.m_headerBase);
+            const auto base = normalized(NativePaths::resolveBuildInput(context.m_workspace, build, policy.m_headerBase));
             for (const auto& header : policy.m_headers)
             {
                 const auto source = normalized(NativePaths::resolveBuildInput(context.m_workspace, build, header));

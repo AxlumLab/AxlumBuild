@@ -187,6 +187,54 @@ with tempfile.TemporaryDirectory(prefix="axlum-build-test-") as s_tmp:
     assert run(s_exe).strip() == "generated=67"
     print("PASS: external codegen and generated source rebuild")
 
+    # A source consuming only a generated mixed-case header must update in the
+    # same build, including MSVC's lowercase sourceDependencies paths. A generator
+    # preserving identical output must neither rebuild consumers nor run forever.
+    s_header_ws = s_root / "header generator workspace"
+    s_header_ws.mkdir()
+    s_header_build = s_root / "header generator output"
+    (s_header_ws / "value.txt").write_text("101\n")
+    (s_header_ws / "Generate.py").write_text(
+        "from pathlib import Path\nimport sys\n"
+        "value = int(Path(sys.argv[1]).read_text())\n"
+        "output = Path(sys.argv[2])\n"
+        "text = '#pragma once\\n#define BUILD_VALUE ' + str(value) + '\\n'\n"
+        "output.parent.mkdir(parents=True, exist_ok=True)\n"
+        "if not output.exists() or output.read_text() != text:\n"
+        "    output.write_text(text)\n"
+    )
+    (s_header_ws / "Main.cpp").write_text(
+        '#include "BuildValue.hpp"\n#include <iostream>\n'
+        'int main() { std::cout << BUILD_VALUE; }\n'
+    )
+    s_header_manifest = s_header_ws / "axlum.build.lua"
+    s_header_manifest.write_text(
+        'workspace("GeneratedHeader")\n'
+        'target("GenerateHeader")\nkind("Codegen")\n'
+        f'tool({json.dumps(str(Path(sys.executable).as_posix()))})\n'
+        'args({"${workspace}/Generate.py", "${workspace}/value.txt", "${build}/generated/BuildValue.hpp"})\n'
+        'inputs({"Generate.py", "value.txt"})\noutputs("generated/BuildValue.hpp")\n'
+        'target("HeaderApp")\nkind("ConsoleApp")\nfiles("Main.cpp")\n'
+        'includedirs("@build/generated")\nprivate_deps("GenerateHeader")\n'
+    )
+    run(s_cli, "configure", "-f", s_header_manifest, "-B", s_header_build)
+    run(s_cli, "build", "-B", s_header_build)
+    s_header_exe = s_header_build / "bin" / ("HeaderApp" + s_suffix)
+    assert run(s_header_exe) == "101"
+    time.sleep(1.1)
+    (s_header_ws / "value.txt").write_text("302\n")
+    run(s_cli, "build", "-B", s_header_build)
+    assert run(s_header_exe) == "302", "generated header update was delayed by one build"
+    assert "no work to do" in run(s_cli, "build", "-B", s_header_build).lower()
+    s_header_before = s_header_exe.stat().st_mtime_ns
+    time.sleep(1.1)
+    (s_header_ws / "value.txt").write_text("302 \n")
+    s_header_log = run(s_cli, "build", "-B", s_header_build)
+    assert "Generate GenerateHeader" in s_header_log
+    assert s_header_exe.stat().st_mtime_ns == s_header_before, s_header_log
+    assert "no work to do" in run(s_cli, "build", "-B", s_header_build).lower()
+    print("PASS: same-build generated header updates and unchanged-output restat")
+
     # Explicit diagnostics for malformed and circular manifests.
     s_bad = s_ws / "bad.toml"
     s_bad.write_text(

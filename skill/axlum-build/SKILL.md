@@ -11,7 +11,7 @@ Locate whether the problem belongs to build planning, dependency management, or 
 
 This package lives at `<AxlumBuild>/skill/axlum-build`; the repository root is two directories above it, not necessarily the shell's current directory. The actual provider is `<AxlumBuild>/third_party/rhodium`, pinned by the consumer's gitlink. The independent development repository is usually its sibling `Rhodium` (locally `E:/Projects/Rhodium`). If absent, inspect `.gitmodules` and user-supplied locations rather than guessing an installed SDK path.
 
-Read applicable `AGENTS.md`, the current root CMake file, and relevant documentation. Use CodeGraph before code exploration in each repository that has `.codegraph/`; do not create an index automatically. Inspect each worktree's status and compare the independent Rhodium HEAD, submodule HEAD, and recorded gitlink. The independent repository's latest code is not necessarily linked by the consumer.
+Read applicable `AGENTS.md` and the actual build entry point: root `CMakeLists.txt` for AxlumBuild's bootstrap, `axlum.build.lua` for a migrated consumer. Use CodeGraph before code exploration in each repository that has `.codegraph/`; do not create an index automatically. Inspect each worktree's status and compare the independent Rhodium HEAD, submodule HEAD, and recorded gitlink. The independent repository's latest code is not necessarily linked by the consumer.
 
 ## Route by responsibility
 
@@ -25,6 +25,9 @@ Read applicable `AGENTS.md`, the current root CMake file, and relevant documenta
 | Official SDK builds/publish and native image validation | `src/managed/` |
 | Install/publish/run/clean | `src/core/BuildOperations.*`, `Diagnostics.*` |
 | IDE output | `src/backend/Ide.*` |
+| Lua convenience APIs, generated files, options, CTest/GoogleTest discovery | `src/manifest/Features.*`, `LuaManifest.cpp` |
+| VS Code selections, tasks, terminals and debugger | `editors/vscode/src/extension.js`, `editor-entries.js`, `task-run.js` |
+| VS Code language services and Testing sidebar | `editors/vscode/src/intellisense.js`, `testing.js` |
 
 These are search anchors, not promises about future paths. Read `docs/DSL.md` and `docs/CLI.md` for contracts, and `docs/NATIVE_VALIDATION.md` for execution boundaries. Historical reports are not evidence of tests run in the current task.
 
@@ -35,6 +38,19 @@ These are search anchors, not promises about future paths. Read `docs/DSL.md` an
 - For restore, lockfile, CRT, artifact, or profile failures, read [the bridge guide](references/bridge.md) and compare the linked provider implementation. Do not adapt solely to the independent repository's newest README.
 - Follow public/private/interface propagation, module/workspace aliases, runtime files, and incremental action inputs/outputs through to the final consumer. Successful configuration alone does not prove a fix.
 - Use official dotnet/MSBuild/NativeAOT only. Mono, UWP, GDK, other consoles, and all 32-bit targets are excluded. Distinguish backend planning, IDE generation, and real platform execution.
+
+## DSL and editor contracts
+
+- Prefer standard Lua tables for routine declarations: `target("App", {kind="ConsoleApp", files={"src/**.cpp"}})`, `settings {...}`, and `when("windows", {defines={"WIN_FEATURE"}})`. Existing sequential calls and function callbacks remain valid. Table values evaluate eagerly; keep conditional side effects inside callbacks. Do not invent arrow/lambda syntax.
+- `files` already expands globs. Use `matchfiles(patterns, exclusions)` when Lua needs the actual sorted list; use `list.concat`, `list.unique`, and `list.prefix` for common list operations. Build-tree generated files belong in explicit `@build/` paths and tracked generator actions, not arbitrary source-tree scans.
+- `test` registers a process; `gtest_discover_tests` registers a native GoogleTest executable for incremental post-build discovery. CTest exports and `axlum.tests.json` are the shared CLI/editor contract. Preserve disabled/parameterized/skipped cases and the command, cwd and environment. Current test debugging supports native targets without an emulator; command-only/managed tests can run through CTest.
+- Keep configuration, build target and run target separate. Run builds incrementally before launching in a separate reusable terminal. Long-running programs must not hold the build-operation busy state. Cancellation owns its operation/process tree, not every running program.
+- Native tasks and the `Axlum: Selected Target` debug entry follow the sidebar selection. Preserve user launch args/env/cwd and custom tasks; generated artifact paths follow the selected configuration. UI labels remain English.
+- Synchronize language services with the selected compilation database. Auto mode prefers installed clangd; otherwise use the C/C++ configuration provider. Enable one semantic engine per workspace, preserve unrelated clangd flags, and supply header context. An existing explicit `c_cpp_properties.json` provider can override defaults.
+
+## Migrating a consumer from CMake
+
+Use [the migration checklist](references/migration.md) when replacing a consumer's build entry point or consolidating dependency recipes. Removing the consumer's project CMake files does not imply removing third-party CMake builds, CTest, downstream compatibility packages, or AxlumBuild's bootstrap CMake configuration.
 
 ## Style and minimal validation
 

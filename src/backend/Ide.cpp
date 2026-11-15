@@ -15,6 +15,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 
 namespace axlum
 {
@@ -154,6 +155,91 @@ namespace axlum
             return {names.begin(), names.end()};
         }
 
+        const Target* targetModel(const IDEContext& c, const std::string& name)
+        {
+            const Target* result = nullptr;
+            for (const auto& target : c.m_workspace.m_targets)
+                if (target.m_name == name || name.starts_with(target.m_name + "__"))
+                    if (!result || target.m_name.size() > result->m_name.size())
+                        result = &target;
+            return result;
+        }
+
+        Json targetPresentation(const IDEContext& c, const std::string& name)
+        {
+            const auto* target = targetModel(c, name);
+            const auto custom = target ? target->m_features.value("ide", Json::object()) : Json::object();
+            const bool internal = name.starts_with("_system_") || name.starts_with("_template_") || name.starts_with("_rhodium_");
+            std::string group = "Libraries";
+            if (name == "all")
+                group = "Build";
+            else if (target && target->m_hostTool)
+                group = "Tools";
+            else if (c.m_graph.m_targetKinds.contains(name))
+            {
+                const auto kind = c.m_graph.m_targetKinds.at(name);
+                if (kind == TargetKind::Executable || (target && target->m_managedExecutable))
+                    group = "Applications";
+                else if (kind == TargetKind::Codegen)
+                    group = "Generated";
+                for (const auto& test : c.m_workspace.m_features.value("test", Json::array()))
+                    if (test.value("target", std::string{}) == name)
+                        group = "Tests";
+            }
+            return {
+                {"group", custom.value("group", group)},
+                {"display_name", custom.value("display_name", name)},
+                {"visible", custom.value("visible", !internal)},
+                {"startup", custom.value("startup", false)}
+            };
+        }
+
+        std::string startupTarget(const IDEContext& c)
+        {
+            std::string selected, fallback;
+            for (const auto& target : c.m_workspace.m_targets)
+            {
+                const auto view = targetPresentation(c, target.m_name);
+                const bool runnable = target.m_kind == TargetKind::Executable || target.m_managedExecutable;
+                if (view.at("startup").get<bool>())
+                {
+                    if (!runnable || !view.at("visible").get<bool>())
+                        throw std::runtime_error("IDE startup target must be visible and executable: " + target.m_name);
+                    if (!selected.empty())
+                        throw std::runtime_error("multiple IDE startup targets in " + c.m_label);
+                    selected = target.m_name;
+                }
+                if (fallback.empty() && runnable && !target.m_hostTool && view.at("visible").get<bool>())
+                    fallback = target.m_name;
+            }
+            return selected.empty() ? fallback : selected;
+        }
+
+        const char* sourceTag(const std::string& file)
+        {
+            const auto ext = fs::path(file).extension().string();
+            return (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c") ? "ClCompile"
+                   : (ext == ".h" || ext == ".hpp" || ext == ".inl")               ? "ClInclude"
+                                                                                   : "None";
+        }
+
+        std::string sourceFolder(const std::vector<IDEContext>& contexts, const fs::path& file)
+        {
+            for (const auto& c : contexts)
+                if (FileSystem::isWithin(file, c.m_buildDirectory))
+                    return (fs::path("Generated") / file.lexically_relative(c.m_buildDirectory).parent_path()).generic_string();
+            for (const auto& c : contexts)
+                if (FileSystem::isWithin(file, c.m_workspace.m_root))
+                    return file.lexically_relative(c.m_workspace.m_root).parent_path().generic_string();
+            return "External";
+        }
+
+        std::string windowsFolder(std::string value)
+        {
+            std::replace(value.begin(), value.end(), '/', '\\');
+            return value;
+        }
+
         std::set<std::string> collectSources(const IDEContext& c, const std::string& name)
         {
             std::set<std::string> files;
@@ -220,13 +306,241 @@ namespace axlum
             return {self.string(), clean ? "clean" : "build", "-B", c.m_buildDirectory.string(), "-t", target};
         }
 
+        Json readJsonc(const fs::path& file)
+        {
+            const auto input = FileSystem::readAll(file);
+            std::string text;
+            bool quoted = false, escaped = false;
+            for (std::size_t i = 0; i < input.size(); ++i)
+            {
+                const char ch = input[i];
+                if (!quoted && ch == '/' && i + 1 < input.size())
+                {
+                    if (input[i + 1] == '/')
+                    {
+                        while (i < input.size() && input[i] != '\n')
+                            ++i;
+                        text += '\n';
+                        continue;
+                    }
+                    if (input[i + 1] == '*')
+                    {
+                        i += 2;
+                        while (i + 1 < input.size() && !(input[i] == '*' && input[i + 1] == '/'))
+                            ++i;
+                        if (i + 1 >= input.size())
+                            throw std::runtime_error("unterminated JSON comment: " + file.string());
+                        ++i;
+                        text += ' ';
+                        continue;
+                    }
+                }
+                text += ch;
+                if (escaped)
+                    escaped = false;
+                else if (quoted && ch == '\\')
+                    escaped = true;
+                else if (ch == '"')
+                    quoted = !quoted;
+            }
+            quoted = escaped = false;
+            for (std::size_t i = 0; i < text.size(); ++i)
+            {
+                const char ch = text[i];
+                if (!quoted && ch == ',')
+                {
+                    const auto next = text.find_first_not_of(" \r\n\t", i + 1);
+                    if (next != std::string::npos && (text[next] == '}' || text[next] == ']'))
+                        text[i] = ' ';
+                }
+                if (escaped)
+                    escaped = false;
+                else if (quoted && ch == '\\')
+                    escaped = true;
+                else if (ch == '"')
+                    quoted = !quoted;
+            }
+            return Json::parse(text);
+        }
+
+        std::string entryKey(const Json& entry)
+        {
+            if (entry.is_object())
+                for (const auto* key : {"preLaunchTask", "label", "name", "id", "path", "Name", "Path"})
+                    if (entry.contains(key) && entry.at(key).is_string())
+                        return std::string(key) + ":" + entry.at(key).get<std::string>();
+            return {};
+        }
+
+        Json mergeUserJson(const Json& generated, const Json& previous, const Json& current)
+        {
+            if (current == previous)
+                return generated;
+            if (generated.is_object() && previous.is_object() && current.is_object())
+            {
+                auto result = generated;
+                for (const auto& [key, value] : current.items())
+                {
+                    if (!previous.contains(key))
+                        result[key] = value;
+                    else if (generated.contains(key))
+                        result[key] = mergeUserJson(generated.at(key), previous.at(key), value);
+                }
+                for (const auto& [key, value] : previous.items())
+                    if (!current.contains(key))
+                        result.erase(key);
+                return result;
+            }
+            if (generated.is_array() && previous.is_array() && current.is_array())
+            {
+                bool keyed = true;
+                for (const auto* array : {&generated, &previous, &current})
+                    for (const auto& item : *array)
+                        keyed &= !entryKey(item).empty();
+                if (keyed)
+                {
+                    std::map<std::string, Json> old, user;
+                    for (const auto& item : previous)
+                        old[entryKey(item)] = item;
+                    for (const auto& item : current)
+                        user[entryKey(item)] = item;
+                    Json result = Json::array();
+                    std::set<std::string> emitted;
+                    for (const auto& item : generated)
+                    {
+                        const auto key = entryKey(item);
+                        if (old.contains(key) && !user.contains(key))
+                            continue;
+                        result.push_back(old.contains(key) && user.contains(key) ? mergeUserJson(item, old.at(key), user.at(key)) : item);
+                        emitted.insert(key);
+                    }
+                    for (const auto& item : current)
+                        if (!old.contains(entryKey(item)) && emitted.insert(entryKey(item)).second)
+                            result.push_back(item);
+                    return result;
+                }
+            }
+            return current;
+        }
+
+        // Adopt personal launch settings from files generated before baselines existed.
+        void adoptLaunchSettings(Json& generated, const Json& current)
+        {
+            if (generated.is_array() && current.is_array())
+            {
+                for (const auto& item : current)
+                {
+                    auto match = std::find_if(
+                        generated.begin(),
+                        generated.end(),
+                        [&](const Json& value)
+                        {
+                            return entryKey(value) == entryKey(item);
+                        }
+                    );
+                    if (match == generated.end())
+                        generated.push_back(item);
+                    else
+                        *match = item;
+                }
+                return;
+            }
+            if (!generated.is_object() || !current.is_object())
+                return;
+            if (generated.contains("launch") && current.contains("launch"))
+                adoptLaunchSettings(generated["launch"], current.at("launch"));
+            if (generated.contains("configurations") && current.contains("configurations"))
+                for (auto& item : generated["configurations"])
+                    for (const auto& existing : current.at("configurations"))
+                        if (entryKey(item) == entryKey(existing))
+                            for (const auto* field :
+                                 {"args",
+                                  "cwd",
+                                  "environment",
+                                  "env",
+                                  "envFile",
+                                  "console",
+                                  "externalConsole",
+                                  "stopAtEntry",
+                                  "symbolSearchPath",
+                                  "visualizerFile",
+                                  "sourceFileMap"})
+                                if (existing.contains(field))
+                                    item[field] = existing.at(field);
+            if (generated.contains("settings") && current.contains("settings"))
+                generated["settings"].merge_patch(current.at("settings"));
+            if (generated.contains("tasks") && current.contains("tasks") && generated["tasks"].is_object())
+                adoptLaunchSettings(generated["tasks"], current.at("tasks"));
+            for (const auto* list : {"configurations", "tasks"})
+                if (generated.contains(list) && generated[list].is_array() && current.contains(list) && current.at(list).is_array())
+                    for (const auto& item : current.at(list))
+                    {
+                        const auto label = item.value("label", std::string{});
+                        const auto name = item.value("name", std::string{});
+                        const auto task = item.value("preLaunchTask", std::string{});
+                        const bool owned = label.starts_with("build:") || label.starts_with("clean:") || label.starts_with("run:") ||
+                                           label.starts_with("Axlum:") || task.starts_with("build:") || name.ends_with(" (run existing)");
+                        if (!owned && std::none_of(
+                                          generated[list].begin(),
+                                          generated[list].end(),
+                                          [&](const Json& value)
+                                          {
+                                              return entryKey(value) == entryKey(item);
+                                          }
+                                      ))
+                            generated[list].push_back(item);
+                    }
+        }
+
+        void writeUserJson(const fs::path& file, const Json& generated, const fs::path& directory)
+        {
+            const auto baseline = directory / ".axlum-generated" / (FileSystem::shortHash(file.filename().string()) + ".json");
+            auto result = generated;
+            if (fs::is_regular_file(file))
+            {
+                const auto current = readJsonc(file); // Invalid user JSON must never be overwritten.
+                if (fs::is_regular_file(baseline))
+                    result = mergeUserJson(generated, readJsonc(baseline), current);
+                else
+                    adoptLaunchSettings(result, current);
+                if (result == current)
+                {
+                    writeGenerated(file, FileSystem::readAll(file));
+                    writeGenerated(baseline, generated.dump(2) + "\n");
+                    return;
+                }
+                if (result != current)
+                    FileSystem::writeIfChanged(fs::path(file.string() + ".user-backup"), FileSystem::readAll(file));
+            }
+            writeGenerated(file, result.dump(2) + "\n");
+            writeGenerated(baseline, generated.dump(2) + "\n");
+        }
+
         void vsCode(const std::vector<IDEContext>& contexts, const fs::path& dir, const fs::path& self)
         {
             Json tasks = Json::array(), launches = Json::array(), configs = Json::array();
+            std::map<std::string, std::size_t> launchOrder;
             for (const auto& c : contexts)
             {
+                const auto startup = startupTarget(c);
+                std::set<std::string> tests;
+                if (c.m_workspace.m_features.contains("test"))
+                    for (const auto& test : c.m_workspace.m_features["test"])
+                        if (test.contains("target"))
+                            tests.insert(test["target"].get<std::string>());
+                for (std::size_t index = 0; index < c.m_workspace.m_targets.size(); ++index)
+                {
+                    const auto& target = c.m_workspace.m_targets[index];
+                    launchOrder[c.m_label + ":" + target.m_name] = target.m_name == startup ? 0
+                                                                                            : index + 1 +
+                                                                                                  (target.m_hostTool               ? 200000
+                                                                                                   : tests.contains(target.m_name) ? 100000
+                                                                                                                                   : 0);
+                }
                 for (const auto& name : collectTargets({c}))
                 {
+                    if (!targetPresentation(c, name).at("visible").get<bool>())
+                        continue;
                     const auto label = c.m_label + ":" + name;
                     const auto custom = customize(c, name, "vscode");
                     for (const bool clean : {false, true})
@@ -296,7 +610,8 @@ namespace axlum
                         }
                     }
                     const auto& outputs = c.m_graph.m_targetOutputs.at(name);
-                    if (c.m_graph.m_targetKinds.at(name) == TargetKind::Executable && !outputs.empty() && c.m_toolchain.m_target == c.m_toolchain.m_host)
+                    if (c.m_graph.m_targetKinds.at(name) == TargetKind::Executable && !outputs.empty() && c.m_toolchain.m_target == c.m_toolchain.m_host &&
+                        (!targetModel(c, name) || !targetModel(c, name)->m_hostTool || name == startup))
                     {
                         Json launch = {
                             {"name", label},
@@ -308,8 +623,14 @@ namespace axlum
                             {"preLaunchTask", "build:" + label},
                             {"stopAtEntry", false}
                         };
-                        if (c.m_toolchain.m_kind != CompilerKind::MSVC)
-                            launch["MIMode"] = c.m_toolchain.m_platform == "macos" ? "lldb" : "gdb";
+                        if (c.m_toolchain.m_platform == "macos")
+                        {
+                            launch["type"] = "lldb-dap";
+                            launch["stopOnEntry"] = false;
+                            launch.erase("stopAtEntry");
+                        }
+                        else if (c.m_toolchain.m_kind != CompilerKind::MSVC)
+                            launch["MIMode"] = "gdb";
                         for (const auto& [key, value] : custom.m_debugger)
                             launch[key] = value;
                         patch(launch, custom, "launch");
@@ -328,32 +649,185 @@ namespace axlum
                     configs.back()[key] = value;
                 patch(configs.back(), custom, "configuration");
             }
-            const Json taskFile = {{"version", "2.0.0"}, {"tasks", tasks}};
+            std::stable_sort(
+                launches.begin(),
+                launches.end(),
+                [&](const Json& a, const Json& b)
+                {
+                    return launchOrder.at(a.at("name").get<std::string>()) < launchOrder.at(b.at("name").get<std::string>());
+                }
+            );
+            std::set<std::string> launchTasks, runnableNames;
+            for (auto& launch : launches)
+            {
+                const auto task = launch.at("preLaunchTask").get<std::string>();
+                launchTasks.insert(task);
+                for (const auto& c : contexts)
+                {
+                    const auto prefix = "build:" + c.m_label + ":";
+                    if (!task.starts_with(prefix))
+                        continue;
+                    const auto name = task.substr(prefix.size());
+                    const auto view = targetPresentation(c, name);
+                    runnableNames.insert(name);
+                    launch["name"] = c.m_label + ":" + view.at("display_name").get<std::string>();
+                    launch["presentation"] = {{"group", view.at("group")}, {"order", launchOrder.at(c.m_label + ":" + name)}};
+                    break;
+                }
+            }
+            tasks.erase(
+                std::remove_if(
+                    tasks.begin(),
+                    tasks.end(),
+                    [&](const Json& task)
+                    {
+                        return !launchTasks.contains(task.at("label").get<std::string>());
+                    }
+                ),
+                tasks.end()
+            );
+            for (auto& task : tasks)
+            {
+                task["hide"] = true;
+                task.erase("group");
+                task["presentation"] = {{"reveal", "silent"}, {"panel", "shared"}, {"showReuseMessage", false}};
+            }
+            Json choices = Json::array({"all"}), runChoices = Json::array(), configurationChoices = Json::array();
+            std::set<std::string> offered;
+            for (const auto& c : contexts)
+            {
+                configurationChoices.push_back({{"label", c.m_label}, {"value", c.m_buildDirectory.string()}});
+                for (const auto& name : collectTargets({c}))
+                {
+                    const auto view = targetPresentation(c, name);
+                    if (!view.at("visible").get<bool>() || !offered.insert(name).second)
+                        continue;
+                    const Json option = {{"label", view.at("group").get<std::string>() + " / " + view.at("display_name").get<std::string>()}, {"value", name}};
+                    choices.push_back(option);
+                    if (runnableNames.contains(name))
+                        runChoices.push_back(option);
+                }
+            }
+            const auto preferred = startupTarget(contexts.front());
+            const auto defaultTarget = preferred.empty() ? "all" : preferred;
+            const auto directory = contexts.size() == 1 ? contexts.front().m_buildDirectory.string() : "${input:axlum.configuration}";
+            Json inputs = Json::array(
+                {{{"id", "axlum.buildTarget"}, {"type", "pickString"}, {"description", "Build target"}, {"options", choices}, {"default", defaultTarget}}}
+            );
+            if (contexts.size() > 1)
+                inputs.push_back(
+                    {{"id", "axlum.configuration"},
+                     {"type", "pickString"},
+                     {"description", "Build configuration"},
+                     {"options", configurationChoices},
+                     {"default", contexts.front().m_buildDirectory.string()}}
+                );
+            if (!runChoices.empty())
+                inputs.push_back(
+                    {{"id", "axlum.runTarget"},
+                     {"type", "pickString"},
+                     {"description", "Executable"},
+                     {"options", runChoices},
+                     {"default", runnableNames.contains(preferred) ? preferred : *runnableNames.begin()}}
+                );
+            for (const auto& [label, command, target] : std::vector<std::tuple<std::string, std::string, std::string>>{
+                     {"Axlum: Build selected target", "build", "${input:axlum.buildTarget}"},
+                     {"Axlum: Build all", "build", "all"},
+                     {"Axlum: Clean selected target", "clean", "${input:axlum.buildTarget}"},
+                     {"Axlum: Run selected target", "run", "${input:axlum.runTarget}"}
+                 })
+            {
+                if (command == "run" && runChoices.empty())
+                    continue;
+                Json task = {
+                    {"label", label},
+                    {"type", "process"},
+                    {"command", self.string()},
+                    {"args", Json::array({command, "-B", directory, "-t", target})},
+                    {"options", {{"cwd", contexts.front().m_workspace.m_root.string()}}},
+                    {"problemMatcher", contexts.front().m_toolchain.m_kind == CompilerKind::MSVC ? "$msCompile" : "$gcc"},
+                    {"presentation", {{"reveal", "always"}, {"panel", "shared"}, {"showReuseMessage", false}}}
+                };
+                if (label == "Axlum: Build selected target")
+                    task["group"] = {{"kind", "build"}, {"isDefault", true}};
+                tasks.push_back(task);
+            }
+            const Json taskFile = {{"version", "2.0.0"}, {"tasks", tasks}, {"inputs", inputs}};
             const Json launchFile = {{"version", "0.2.0"}, {"configurations", launches}};
-            writeGenerated(dir / ".vscode/tasks.json", taskFile.dump(2) + "\n");
-            writeGenerated(dir / ".vscode/launch.json", launchFile.dump(2) + "\n");
+            writeUserJson(dir / ".vscode/tasks.json", taskFile, dir);
+            writeUserJson(dir / ".vscode/launch.json", launchFile, dir);
             writeGenerated(dir / ".vscode/c_cpp_properties.json", Json{{"version", 4}, {"configurations", configs}}.dump(2) + "\n");
+            // Stable editor protocol: selections use real target names, never display labels.
+            Json editorEntries = Json::array();
+            for (std::size_t i = 0; i < contexts.size(); ++i)
+            {
+                const auto& c = contexts[i];
+                Json targets = Json::array();
+                for (const auto& name : collectTargets({c}))
+                {
+                    auto view = targetPresentation(c, name);
+                    if (!view.at("visible").get<bool>())
+                        continue;
+                    view["name"] = name;
+                    const auto label = "build:" + c.m_label + ":" + name;
+                    for (const auto& launch : launches)
+                        if (launch.at("preLaunchTask") == label)
+                            view["launch"] = launch;
+                    targets.push_back(view);
+                }
+                editorEntries.push_back(
+                    {{"id", c.m_label},
+                     {"configuration", BuildModel::toString(c.m_configuration)},
+                     {"architecture", c.m_toolchain.m_architecture},
+                     {"buildDirectory", c.m_buildDirectory.string()},
+                     {"intelliSense", configs[i]},
+                     {"startupTarget", startupTarget(c)},
+                     {"problemMatcher", c.m_toolchain.m_kind == CompilerKind::MSVC ? "$msCompile" : "$gcc"},
+                     {"targets", targets}}
+                );
+            }
+            const auto editorFile = dir / "axlum.ide.json";
+            writeGenerated(
+                editorFile,
+                Json{
+                    {"version", 1},
+                    {"workspace", contexts.front().m_workspace.m_name},
+                    {"sourceDirectory", contexts.front().m_workspace.m_root.string()},
+                    {"executable", self.string()},
+                    {"entries", editorEntries},
+                    {"reconfigure", {{"args", contexts.front().m_regenerateArguments}, {"cwd", contexts.front().m_regenerateDirectory.string()}}}
+                }.dump(2) +
+                    "\n"
+            );
             Json workspace = {
                 {"folders", Json::array({{{"name", "Sources"}, {"path", contexts.front().m_workspace.m_root.generic_string()}}})},
                 {"tasks", taskFile},
                 {"launch", launchFile},
                 {"settings", {{"C_Cpp.default.compileCommands", (contexts.front().m_buildDirectory / "compile_commands.json").string()}}}
             };
-            std::set<std::string> managedFolders;
+            Json excludes = {{"**/.cache", true}, {"**/.codegraph", true}, {"**/.tpkg", true}, {"**/.rhodium", true}, {"**/.axlum-generated", true}};
             for (const auto& c : contexts)
-                for (const auto& t : c.m_workspace.m_targets)
-                    if (t.m_kind == TargetKind::DotNetProject)
-                    {
-                        const auto folder = fs::path(t.m_project).parent_path().generic_string();
-                        if (managedFolders.insert(folder).second)
-                            workspace["folders"].push_back({{"name", t.m_name + " [" + c.m_label + "]"}, {"path", folder}});
-                    }
+                if (FileSystem::isWithin(c.m_buildDirectory, c.m_workspace.m_root))
+                    excludes[c.m_buildDirectory.lexically_relative(c.m_workspace.m_root).generic_string()] = true;
+            workspace["settings"]["files.exclude"] = excludes;
+            workspace["settings"]["search.exclude"] = excludes;
+            workspace["settings"]["debug.onTaskErrors"] = "abort";
+            workspace["settings"]["axlum.projectFile"] = editorFile.string();
+            workspace["extensions"]["recommendations"] = Json::array({"ms-vscode.cpptools"});
             patch(workspace, customize(contexts.front(), "", "vscode"), "workspace");
-            writeGenerated(dir / (contexts.front().m_workspace.m_name + ".code-workspace"), workspace.dump(2) + "\n");
+            writeUserJson(dir / (contexts.front().m_workspace.m_name + ".code-workspace"), workspace, dir);
         }
 
-        void visualStudio(const std::vector<IDEContext>& contexts, const fs::path& dir, const fs::path& self)
+        void visualStudio(const std::vector<IDEContext>& entries, const fs::path& dir, const fs::path& self)
         {
+            auto contexts = entries;
+            std::set<std::string> combinations;
+            for (auto& context : contexts)
+            {
+                context.m_label = BuildModel::toString(context.m_configuration);
+                if (!combinations.insert(context.m_label + "|" + context.m_toolchain.m_architecture).second)
+                    throw std::runtime_error("Visual Studio requires a unique configuration/platform pair; generate conflicting presets separately");
+            }
             auto names = collectTargets(contexts);
             std::erase_if(
                 names,
@@ -362,7 +836,14 @@ namespace axlum
                     for (const auto& c : contexts)
                         if (c.m_graph.m_targetKinds.contains(name) && c.m_graph.m_targetKinds.at(name) == TargetKind::DotNetProject)
                             return true;
-                    return false;
+                    return std::none_of(
+                        contexts.begin(),
+                        contexts.end(),
+                        [&](const IDEContext& c)
+                        {
+                            return c.m_graph.m_targetKinds.contains(name) && targetPresentation(c, name).at("visible").get<bool>();
+                        }
+                    );
                 }
             );
             names.insert(names.begin(), "all");
@@ -388,25 +869,71 @@ namespace axlum
             {
                 return nativeGuids.contains(name) ? nativeGuids.at(name) : makeGuid(name);
             };
+            std::map<std::string, std::string> folders, nested;
+            std::function<std::string(const std::string&)> folder = [&](const std::string& path)
+            {
+                if (folders.contains(path))
+                    return folders.at(path);
+                const auto id = makeGuid("folder:" + path);
+                folders[path] = id;
+                const auto slash = path.rfind('/');
+                if (slash != std::string::npos)
+                    nested[id] = folder(path.substr(0, slash));
+                return id;
+            };
+            auto viewFor = [&](const std::string& name)
+            {
+                for (const auto& c : contexts)
+                    if (name == "all" || c.m_graph.m_targetKinds.contains(name))
+                        return targetPresentation(c, name);
+                return targetPresentation(contexts.front(), name);
+            };
             std::ostringstream sln;
-            sln << "Microsoft Visual Studio Solution File, Format Version 12.00\n# Visual Studio Version 17\n";
+            auto solutionPath = [&](const fs::path& project)
+            {
+                auto relative = project.is_absolute() ? project.lexically_relative(dir) : project;
+                // Different Windows drives have no relative path.
+                return windowsFolder((relative.empty() ? project : relative).generic_string());
+            };
+            sln << "Microsoft Visual Studio Solution File, Format Version 12.00\n# Visual Studio Version 17\n"
+                << "VisualStudioVersion = 17.0.31903.59\nMinimumVisualStudioVersion = 10.0.40219.1\n";
+            // A source SDK project must only be loaded once, even across configurations.
+            std::map<std::string, std::pair<const Target*, const IDEContext*>> managedProjects;
             for (const auto& c : contexts)
                 for (const auto& target : c.m_workspace.m_targets)
-                    if (target.m_kind == TargetKind::DotNetProject)
-                    {
-                        const auto key = target.m_name + "@" + c.m_label;
-                        sln << "Project(\"{9A19103F-16F7-4668-BE54-9A1E7A4F7556}\") = \"" << target.m_name << " [" << c.m_label << "]\", \""
-                            << fs::path(target.m_project).generic_string() << "\", \"" << makeGuid(key) << "\"\nEndProject\n";
-                    }
+                    if (target.m_kind == TargetKind::DotNetProject && targetPresentation(c, target.m_name).at("visible").get<bool>())
+                        managedProjects.try_emplace(fileKey(target.m_project), &target, &c);
+            for (const auto& [key, item] : managedProjects)
+            {
+                const auto& [target, owner] = item;
+                const auto view = targetPresentation(*owner, target->m_name);
+                const auto guid = makeGuid("managed:" + key);
+                nested[guid] = folder(view.at("group").get<std::string>());
+                auto display = view.at("display_name").get<std::string>();
+                if (std::count_if(
+                        managedProjects.begin(),
+                        managedProjects.end(),
+                        [&](const auto& value)
+                        {
+                            return value.second.first->m_name == target->m_name;
+                        }
+                    ) > 1)
+                    display += " [" + owner->m_label + "]";
+                sln << "Project(\"{9A19103F-16F7-4668-BE54-9A1E7A4F7556}\") = \"" << display << "\", \"" << solutionPath(target->m_project) << "\", \"" << guid
+                    << "\"\nEndProject\n";
+            }
             for (const auto& name : names)
             {
+                const auto view = viewFor(name);
+                const auto displayName = view.at("display_name").get<std::string>();
+                nested[projectGuid(name)] = folder(view.at("group").get<std::string>());
                 if (external.contains(name))
                 {
-                    sln << "Project(\"{BC8A1FFA-BEE3-4634-8014-F334798102B3}\") = \"" << name << "\", \"" << externalPaths.at(name) << "\", \""
-                        << projectGuid(name) << "\"\nEndProject\n";
+                    sln << "Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \"" << displayName << "\", \"" << solutionPath(externalPaths.at(name))
+                        << "\", \"" << projectGuid(name) << "\"\nEndProject\n";
                     continue;
                 }
-                sln << "Project(\"{BC8A1FFA-BEE3-4634-8014-F334798102B3}\") = \"" << name << "\", \"" << name << ".vcxproj\", \"" << makeGuid(name)
+                sln << "Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \"" << displayName << "\", \"" << name << ".vcxproj\", \"" << makeGuid(name)
                     << "\"\nEndProject\n";
                 std::ostringstream project;
                 const auto customization = customize(contexts.front(), name, "vs");
@@ -421,7 +948,8 @@ namespace axlum
                                 << "</Configuration><Platform>" << (c.m_toolchain.m_architecture == "arm64" ? "ARM64" : "x64")
                                 << "</Platform></ProjectConfiguration>\n";
                 project << "</ItemGroup><PropertyGroup Label=\"Globals\"><ProjectGuid>" << makeGuid(name)
-                        << "</ProjectGuid><Keyword>MakeFileProj</Keyword></PropertyGroup>\n<Import "
+                        << "</ProjectGuid><VCProjectVersion>17.0</VCProjectVersion><Keyword>MakeFileProj</Keyword>"
+                           "<WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion></PropertyGroup>\n<Import "
                            "Project=\"$(VCTargetsPath)\\Microsoft.Cpp.Default.props\"/>\n";
                 project << customization.m_projectBegin << "\n";
                 for (const auto& c : contexts)
@@ -458,7 +986,8 @@ namespace axlum
                             << (c.m_toolchain.m_architecture == "arm64" ? "ARM64" : "x64") << "'\">\n"
                             << "<NMakeBuildCommandLine>" << escapeXml(build) << "</NMakeBuildCommandLine>\n<NMakeCleanCommandLine>" << escapeXml(clean)
                             << "</NMakeCleanCommandLine>\n<NMakeReBuildCommandLine>" << escapeXml(rebuild) << "</NMakeReBuildCommandLine>\n"
-                            << "<NMakeOutput>" << (outputs.empty() ? "" : escapeXml(outputs.front().string())) << "</NMakeOutput>\n"
+                            << "<DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>\n<NMakeOutput>"
+                            << (outputs.empty() ? "" : escapeXml(outputs.front().string())) << "</NMakeOutput>\n"
                             << "<OutDir>" << escapeXml(c.m_buildDirectory.string()) << "\\</OutDir><IntDir>"
                             << escapeXml((dir / "obj" / name / c.m_label).string()) << "\\</IntDir>\n"
                             << "<NMakeIncludeSearchPath>" << escapeXml(join(iface.m_includes))
@@ -479,20 +1008,43 @@ namespace axlum
                 project << "<ItemGroup>\n";
                 for (const auto& file : files)
                 {
-                    const auto ext = fs::path(file).extension().string();
-                    const auto tag = (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c") ? "ClCompile"
-                                     : (ext == ".h" || ext == ".hpp" || ext == ".inl")               ? "ClInclude"
-                                                                                                     : "None";
+                    const auto tag = sourceTag(file);
                     project << '<' << tag << " Include=\"" << escapeXml(file) << "\"/>\n";
                 }
                 project << "</ItemGroup><Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.targets\"/>\n" << customization.m_projectEnd << "\n</Project>\n";
-                writeGenerated(dir / (name + ".vcxproj"), project.str());
+                auto projectText = project.str();
+                writeGenerated(dir / (name + ".vcxproj"), projectText);
                 const auto xmlRoot = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Project ToolsVersion=\"4.0\" "
                                      "xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n";
-                if (!customization.m_filtersBegin.empty() || !customization.m_filtersEnd.empty())
-                    writeGenerated(
-                        dir / (name + ".vcxproj.filters"), xmlRoot + customization.m_filtersBegin + "\n" + customization.m_filtersEnd + "\n</Project>\n"
-                    );
+                std::set<std::string> filterNames;
+                std::map<std::string, std::string> fileFilters;
+                for (const auto& file : files)
+                {
+                    auto path = sourceFolder(contexts, fs::path(file));
+                    fileFilters[file] = path;
+                    while (!path.empty())
+                    {
+                        filterNames.insert(path);
+                        const auto slash = path.rfind('/');
+                        path = slash == std::string::npos ? "" : path.substr(0, slash);
+                    }
+                }
+                std::ostringstream filters;
+                filters << xmlRoot << customization.m_filtersBegin << "\n<ItemGroup>\n";
+                for (const auto& path : filterNames)
+                    filters << "<Filter Include=\"" << escapeXml(windowsFolder(path)) << "\"><UniqueIdentifier>" << makeGuid("filter:" + name + ":" + path)
+                            << "</UniqueIdentifier></Filter>\n";
+                filters << "</ItemGroup><ItemGroup>\n";
+                for (const auto& [file, path] : fileFilters)
+                {
+                    const auto tag = sourceTag(file);
+                    filters << '<' << tag << " Include=\"" << escapeXml(file) << "\">";
+                    if (!path.empty())
+                        filters << "<Filter>" << escapeXml(windowsFolder(path)) << "</Filter>";
+                    filters << "</" << tag << ">\n";
+                }
+                filters << "</ItemGroup>\n" << customization.m_filtersEnd << "\n</Project>\n";
+                writeGenerated(dir / (name + ".vcxproj.filters"), filters.str());
                 std::string user = xmlRoot + customization.m_userBegin + "\n";
                 bool writeUser = !customization.m_userBegin.empty() || !customization.m_userEnd.empty();
                 for (const auto& c : contexts)
@@ -505,8 +1057,13 @@ namespace axlum
                         user += '<' + key + '>' + escapeXml(value) + "</" + key + ">\n";
                     user += "</PropertyGroup>\n";
                 }
-                if (writeUser)
-                    writeGenerated(dir / (name + ".vcxproj.user"), user + customization.m_userEnd + "\n</Project>\n");
+                if (writeUser && !fs::exists(dir / (name + ".vcxproj.user")))
+                    FileSystem::writeIfChanged(dir / (name + ".vcxproj.user"), user + customization.m_userEnd + "\n</Project>\n");
+            }
+            for (const auto& [path, id] : folders)
+            {
+                const auto label = path.substr(path.rfind('/') == std::string::npos ? 0 : path.rfind('/') + 1);
+                sln << "Project(\"{2150E333-8FDC-42A3-9474-1A3956D46DE8}\") = \"" << label << "\", \"" << label << "\", \"" << id << "\"\nEndProject\n";
             }
             sln << "Global\n\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n";
             for (const auto& c : contexts)
@@ -533,23 +1090,76 @@ namespace axlum
                         const auto architecture =
                             external.contains(name) ? NativeProjectBuilder::nativeProjectArchitecture(*item, c.m_toolchain.m_architecture) : p;
                         sln << "\t\t" << projectGuid(name) << '.' << c.m_label << '|' << p << ".ActiveCfg = " << configuration << '|' << architecture << '\n';
-                        // One aggregate build avoids concurrent Ninja processes for the same build directory.
-                        if (name == "all")
+                        // Keep startup projects enabled for VS build-before-debug. The CLI
+                        // serializes requests sharing a Ninja build directory.
+                        if (!external.contains(name))
                             sln << "\t\t" << makeGuid(name) << '.' << c.m_label << '|' << p << ".Build.0 = " << c.m_label << '|' << p << '\n';
                     }
-            for (const auto& owner : contexts)
-                for (const auto& target : owner.m_workspace.m_targets)
-                    if (target.m_kind == TargetKind::DotNetProject)
-                    {
-                        for (const auto& entry : contexts)
+            for (const auto& [key, item] : managedProjects)
+                for (const auto& entry : contexts)
+                {
+                    const bool available = std::any_of(
+                        entry.m_workspace.m_targets.begin(),
+                        entry.m_workspace.m_targets.end(),
+                        [&](const Target& target)
                         {
-                            const auto platform = entry.m_toolchain.m_architecture == "arm64" ? "ARM64" : "x64";
-                            sln << "\t\t" << makeGuid(target.m_name + "@" + owner.m_label) << '.' << entry.m_label << '|' << platform
-                                << ".ActiveCfg = " << BuildModel::toString(owner.m_configuration) << "|Any CPU\n";
+                            return target.m_kind == TargetKind::DotNetProject && fileKey(target.m_project) == key;
                         }
-                    }
-            sln << "\tEndGlobalSection\nEndGlobal\n";
-            writeGenerated(dir / (contexts.front().m_workspace.m_name + ".sln"), sln.str());
+                    );
+                    const auto platform = entry.m_toolchain.m_architecture == "arm64" ? "ARM64" : "x64";
+                    sln << "\t\t" << makeGuid("managed:" + key) << '.' << entry.m_label << '|' << platform
+                        << ".ActiveCfg = " << BuildModel::toString(available ? entry.m_configuration : item.second->m_configuration) << "|Any CPU\n";
+                }
+            sln << "\tEndGlobalSection\n\tGlobalSection(NestedProjects) = preSolution\n";
+            for (const auto& [child, parent] : nested)
+                sln << "\t\t" << child << " = " << parent << '\n';
+            sln << "\tEndGlobalSection\n\tGlobalSection(SolutionProperties) = preSolution\n"
+                << "\t\tHideSolutionNode = FALSE\n\tEndGlobalSection\n"
+                << "\tGlobalSection(ExtensibilityGlobals) = postSolution\n\t\tSolutionGuid = " << makeGuid("solution:" + contexts.front().m_workspace.m_name)
+                << "\n\tEndGlobalSection\nEndGlobal\n";
+            auto solution = sln.str();
+            // VS initially uses the first project as startup project. Prefer an
+            // application; users can subsequently select any runnable project.
+            const auto startup = startupTarget(contexts.front());
+            if (!startup.empty())
+            {
+                const auto display = targetPresentation(contexts.front(), startup).at("display_name").get<std::string>();
+                const auto selected = solution.find(" = \"" + display + "\",");
+                if (selected != std::string::npos)
+                {
+                    const auto begin = solution.rfind("Project(", selected);
+                    const auto end = solution.find("EndProject\n", selected) + std::string("EndProject\n").size();
+                    const auto block = solution.substr(begin, end - begin);
+                    solution.erase(begin, end - begin);
+                    solution.insert(solution.find("Project("), block);
+                }
+            }
+            writeGenerated(dir / (contexts.front().m_workspace.m_name + ".sln"), solution);
+            // VS 2022 17.11+ reads shared launch profiles into its startup dropdown.
+            Json profiles = Json::array();
+            std::set<std::string> profiled;
+            for (const auto& c : contexts)
+                for (const auto& target : c.m_workspace.m_targets)
+                {
+                    const auto view = targetPresentation(c, target.m_name);
+                    if (!view.at("visible").get<bool>() || (target.m_hostTool && target.m_name != startup) || !profiled.insert(target.m_name).second)
+                        continue;
+                    fs::path project;
+                    if (target.m_kind == TargetKind::Executable && c.m_toolchain.m_target == c.m_toolchain.m_host)
+                        project = externalPaths.contains(target.m_name) ? fs::path(externalPaths.at(target.m_name)) : fs::path(target.m_name + ".vcxproj");
+                    else if (
+                        target.m_kind == TargetKind::DotNetProject &&
+                        (target.m_managedExecutable ||
+                         std::regex_search(FileSystem::readAll(target.m_project), std::regex(R"(<OutputType>\s*(Exe|WinExe)\s*</OutputType>)")))
+                    )
+                        project = target.m_project;
+                    if (project.empty())
+                        continue;
+                    profiles.push_back(
+                        {{"Name", view.at("display_name")}, {"Projects", Json::array({{{"Path", solutionPath(project)}, {"Action", "Start"}}})}}
+                    );
+                }
+            writeUserJson(dir / (contexts.front().m_workspace.m_name + ".slnLaunch"), profiles, dir);
         }
 
         void driver(const std::vector<IDEContext>& contexts, const fs::path& dir, const fs::path& self)
@@ -596,7 +1206,7 @@ else:
             source = pathlib.Path(value)
             if source.suffix == '.so':
                 dest = staged / source.name
-                expected.add(dest.m_name)
+                expected.add(dest.name)
                 if not dest.exists() or source.read_bytes() != dest.read_bytes(): shutil.copy2(source, dest)
     for old in staged.glob('*.so'):
         if old.name not in expected: old.unlink()
@@ -749,7 +1359,7 @@ else:
             writeGenerated(
                 dir / "settings.gradle",
                 "pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } "
-                "}\ndependencyResolutionManagement { repositories { google(); mavenCentral() } }\nrootProject.m_name "
+                "}\ndependencyResolutionManagement { repositories { google(); mavenCentral() } }\nrootProject.name "
                 "= " +
                     q(contexts.front().m_workspace.m_name) + "\nif (providers.gradleProperty('axlumAndroid').orNull == 'true') { include ':native' }\n"
             );
@@ -830,7 +1440,7 @@ android {
 tasks.configureEach { task ->
     if (task.name.startsWith('merge') && task.name.endsWith('JniLibFolders')) {
         def variant = task.name.substring(5, task.name.length() - 'JniLibFolders'.length())
-        task.dependsOn tasks.matching { it.m_name == 'externalNativeBuild' + variant }
+        task.dependsOn tasks.matching { it.name == 'externalNativeBuild' + variant }
     }
 }
 )gr");
@@ -958,9 +1568,9 @@ tasks.configureEach { task ->
 
         if (contexts.empty())
             throw std::runtime_error("IDE generation has no supported target/configuration combinations");
-        if (format == "vscode" || format == "all")
+        if (format == "vscode" || format == "desktop" || format == "all")
             vsCode(contexts, output / "vscode", executable);
-        if (format == "vs" || format == "all")
+        if (format == "vs" || format == "desktop" || format == "all")
             visualStudio(contexts, output / "vs", executable);
         if (format == "xcode" || format == "all")
         {
@@ -984,10 +1594,13 @@ tasks.configureEach { task ->
             for (const auto& name : Json::parse(FileSystem::readAll(ledger)).get<std::vector<std::string>>())
             {
                 const fs::path file(name);
+                if (file.extension() == ".user")
+                    continue; // Personal debugger settings are never generator-owned.
                 if (!FileSystem::isWithin(fs::weakly_canonical(file), fs::weakly_canonical(output)))
                     continue;
                 const auto relative = file.lexically_relative(fs::absolute(output));
-                if (format != "all" && !relative.empty() && relative.begin()->string() != format)
+                if (format != "all" && !relative.empty() && relative.begin()->string() != format &&
+                    !(format == "desktop" && (relative.begin()->string() == "vs" || relative.begin()->string() == "vscode")))
                 {
                     if (fs::is_regular_file(file) && keys.insert(fileKey(file)).second)
                         paths.push_back(file.generic_string());

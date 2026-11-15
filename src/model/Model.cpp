@@ -1,4 +1,4 @@
-/*
+﻿/*
  * @Author: khfahqp khfahqp@gmail.com
  * @LastEditors: khfahqp khfahqp@gmail.com
  * Copyright (c) 2026 by AxlumLab, All Rights Reserved.
@@ -468,7 +468,8 @@ namespace axlum
         {
             if (t.m_kind == TargetKind::StaticLibrary || t.m_kind == TargetKind::SharedLibrary || t.m_kind == TargetKind::Executable)
             {
-                bool hasSource = BuildModel::isNativeProject(t) || !t.m_sources.empty() || !t.m_compile.m_pchSource.empty();
+                bool hasSource = t.m_features.contains("generatedsources") || !t.m_hostArtifact.empty() || BuildModel::isNativeProject(t) ||
+                                 !t.m_sources.empty() || !t.m_compile.m_pchSource.empty();
                 for (const auto& module : ws.m_modules)
                     if (module.m_targetName == t.m_name)
                         hasSource |= !module.m_sources.empty() || !module.m_compile.m_pchSource.empty();

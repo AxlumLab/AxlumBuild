@@ -61,6 +61,7 @@ namespace axlum
             const std::string& architecture = "x64",
             const std::string& platform = {}
         );
+        static void reuseSearchPath(Toolchain& toolchain, const fs::path& buildDirectory);
         static std::string toolchainFingerprint(const Toolchain& toolchain, Configuration config);
         static std::string hostTriple();
         static std::string latestCppDialect(const Toolchain& toolchain);

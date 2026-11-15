@@ -192,13 +192,60 @@ namespace axlum
         return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     }
 
+    fs::path FileSystem::dependencyPath(const fs::path& path)
+    {
+#ifdef _WIN32
+        if (path.is_absolute())
+        {
+            auto existing = path;
+            fs::path suffix;
+            while (!existing.empty())
+            {
+                const auto handle = CreateFileW(
+                    existing.c_str(),
+                    FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr,
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                    nullptr
+                );
+                if (handle != INVALID_HANDLE_VALUE)
+                {
+                    const auto size = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+                    std::wstring resolved(size, L'\0');
+                    const auto length = size ? GetFinalPathNameByHandleW(handle, resolved.data(), size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) : 0;
+                    CloseHandle(handle);
+                    if (length && length < size)
+                    {
+                        resolved.resize(length);
+                        if (resolved.starts_with(L"\\\\?\\UNC\\"))
+                            resolved = L"\\\\" + resolved.substr(8);
+                        else if (resolved.starts_with(L"\\\\?\\"))
+                            resolved.erase(0, 4);
+                        return (suffix.empty() ? fs::path(resolved) : fs::path(resolved) / suffix).lexically_normal();
+                    }
+                    break;
+                }
+                const auto parent = existing.parent_path();
+                if (parent == existing)
+                    break;
+                suffix = suffix.empty() ? existing.filename() : existing.filename() / suffix;
+                existing = parent;
+            }
+        }
+#endif
+        return path.lexically_normal();
+    }
+
     void FileSystem::writeMsvcDepfile(const fs::path& jsonFile, const fs::path& depfile, const fs::path& object)
     {
         const auto data = nlohmann::json::parse(FileSystem::readAll(jsonFile)).at("Data");
         auto escape = [](const fs::path& path)
         {
             std::string result;
-            for (const char c : path.generic_string())
+            // MSVC can lowercase include paths. Ninja node identities are case-sensitive.
+            for (const char c : FileSystem::dependencyPath(path).generic_string())
             {
                 if (c == '$')
                     result += "$$";

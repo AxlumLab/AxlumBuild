@@ -117,6 +117,8 @@ with tempfile.TemporaryDirectory(prefix="axlum cross matrix ") as s_tmp:
         env=s_env,
     )
     s_studio = s_ide / "android-studio"
+    assert "rootProject.name =" in (s_studio / "settings.gradle").read_text()
+    assert "it.name == 'externalNativeBuild' + variant" in (s_studio / "native/build.gradle").read_text()
     s_cmake = shutil.which("cmake")
     s_bridge = s_root / "native bridge"
     run(

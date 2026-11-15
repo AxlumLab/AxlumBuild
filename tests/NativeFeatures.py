@@ -48,7 +48,12 @@ def stamp(paths):
     return {str(p): p.stat().st_mtime_ns for p in paths}
 
 
-assert "Toolchains discovered by Rhodium" in run(s_cli, "doctor")
+s_inventory = json.loads(run(s_cli, "doctor", "--json", "--strict"))
+assert s_inventory["provider"] == "Rhodium"
+assert any(
+    profile["complete"] and profile["supported"] and Path(profile["cxxCompiler"]).is_file()
+    for profile in s_inventory["profiles"]
+), s_inventory
 with tempfile.TemporaryDirectory(prefix="axlum-native-features-") as s_tmp:
     s_root = Path(s_tmp)
     s_ws = s_root / "workspace with spaces"
@@ -57,9 +62,9 @@ with tempfile.TemporaryDirectory(prefix="axlum-native-features-") as s_tmp:
     s_output = s_root / "debug output"
     s_configure = [s_cli, "configure", "-f", s_manifest, "-B", s_output]
     run(*s_configure)
-    s_env = json.loads((s_output / "axlum.environment.json").read_text())
+    s_toolEnv = json.loads((s_output / "axlum.environment.json").read_text())
     if s_msvc:
-        assert s_env.get("INCLUDE") and s_env.get("LIB")
+        assert s_toolEnv.get("INCLUDE") and s_toolEnv.get("LIB")
     run(s_cli, "build", "-B", s_output, "--target", "FeatureApp")
     s_exe = (
         s_output
@@ -241,7 +246,7 @@ pch(false)
         for line in (s_output / "axlum.state").read_text().splitlines()
     )
     s_binaryPath = next(
-        (v for k, v in s_env.items() if k.lower() == "path"), s_env.get("PATH", "")
+        (v for k, v in s_toolEnv.items() if k.lower() == "path"), s_toolEnv.get("PATH", "")
     )
     s_compiler = s_cpp["arguments"][0]
     s_profile = {
@@ -257,8 +262,8 @@ pch(false)
         "ninja": s_state["ninja"],
         "sdk_version": "test-sdk-1",
         "compiler_version": "test-compiler-1",
-        "system_include_dirs": s_env.get("INCLUDE", "").split(";") if s_msvc else [],
-        "system_lib_dirs": s_env.get("LIB", "").split(";") if s_msvc else [],
+        "system_include_dirs": s_toolEnv.get("INCLUDE", "").split(";") if s_msvc else [],
+        "system_lib_dirs": s_toolEnv.get("LIB", "").split(";") if s_msvc else [],
     }
     s_profilePath = s_ws / ".rhodium" / "toolchains" / "user.toml"
     s_profilePath.parent.mkdir(parents=True, exist_ok=True)
@@ -266,7 +271,7 @@ pch(false)
         key + " = " + json.dumps(value) + "\n" for key, value in s_profile.items()
     )
     s_text += "\n[toolchain.environment]\n" + "".join(
-        key + " = " + json.dumps(value) + "\n" for key, value in s_env.items()
+        key + " = " + json.dumps(value) + "\n" for key, value in s_toolEnv.items()
     )
     s_profilePath.write_text(s_text)
     (s_ws / ".rhodium" / "local.toml").write_text(

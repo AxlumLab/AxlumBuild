@@ -1,0 +1,281 @@
+{
+  "name": "axlum-build",
+  "displayName": "Axlum Build",
+  "description": "Select Axlum configurations and targets, build incrementally, run and debug.",
+  "version": "0.4.0",
+  "publisher": "axlum",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./src/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onDebugResolve:axlum",
+    "onDebugDynamicConfigurations:axlum"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "package": "python package.py"
+  },
+  "contributes": {
+    "taskDefinitions": [
+      {
+        "type": "axlum",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "build",
+              "buildAll",
+              "buildRun",
+              "clean",
+              "run"
+            ]
+          },
+          "target": {
+            "type": "string",
+            "description": "Optional fixed target. Omit to follow the sidebar selection."
+          },
+          "configuration": {
+            "type": "string",
+            "description": "Optional fixed configuration. Omit to follow the sidebar selection."
+          }
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Axlum Build",
+      "properties": {
+        "axlum.projectFile": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "Path to generated axlum.ide.json. Open the generated .code-workspace to configure automatically."
+        },
+        "axlum.syncIntelliSense": {
+          "type": "boolean",
+          "default": true,
+          "description": "Update C/C++ default compiler and compilation database for the selected configuration."
+        },
+        "axlum.openPanelOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Focus the Axlum Build sidebar when a generated workspace is loaded."
+        },
+        "axlum.saveBeforeBuild": {
+          "type": "boolean",
+          "default": true,
+          "description": "Save existing files before building, running or debugging. A failed save cancels the operation."
+        },
+        "axlum.languageService": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "cpptools",
+            "clangd"
+          ],
+          "default": "auto",
+          "description": "C/C++ language service. Auto prefers installed clangd, otherwise Microsoft C/C++. Uses the selected Axlum configuration and enables only one semantic engine."
+        },
+        "axlum.ctestPath": {
+          "type": "string",
+          "default": "ctest",
+          "description": "CTest executable used by the Testing sidebar."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "axlum.selectConfiguration",
+        "title": "Axlum: Select Configuration",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "axlum.selectBuildTarget",
+        "title": "Axlum: Select Build Target",
+        "icon": "$(target)"
+      },
+      {
+        "command": "axlum.selectRunTarget",
+        "title": "Axlum: Select Executable",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "axlum.build",
+        "title": "Axlum: Build Selected Target",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "axlum.clean",
+        "title": "Axlum: Clean Selected Target"
+      },
+      {
+        "command": "axlum.run",
+        "title": "Axlum: Run Selected Executable",
+        "icon": "$(play)"
+      },
+      {
+        "command": "axlum.debug",
+        "title": "Axlum: Debug Selected Executable",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "axlum.stop",
+        "title": "Axlum: Cancel Build",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "axlum.reload",
+        "title": "Axlum: Reload Project Metadata"
+      },
+      {
+        "command": "axlum.openPanel",
+        "title": "Axlum: Open Build Panel",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "axlum.reconfigure",
+        "title": "Axlum: Reconfigure Workspace",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "axlum.checkDebugger",
+        "title": "Axlum: Check Debugger"
+      },
+      {
+        "command": "axlum.showOutput",
+        "title": "Axlum: Show Output"
+      },
+      {
+        "command": "axlum.buildWithTarget",
+        "title": "Axlum: Build with Target"
+      },
+      {
+        "command": "axlum.stopRun",
+        "title": "Axlum: Stop Running Program",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "axlum.showRun",
+        "title": "Axlum: Show Running Program"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "axlum.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "axlum.active"
+      },
+      {
+        "command": "axlum.debug",
+        "key": "f5",
+        "when": "focusedView == axlum.project && axlum.active && !inDebugMode"
+      },
+      {
+        "command": "axlum.run",
+        "key": "ctrl+f5",
+        "mac": "ctrl+f5",
+        "when": "focusedView == axlum.project && axlum.active && !inDebugMode"
+      },
+      {
+        "command": "axlum.build",
+        "key": "f7",
+        "when": "axlum.active && !cmake:enableFullFeatureSet"
+      },
+      {
+        "command": "axlum.buildWithTarget",
+        "key": "shift+f7",
+        "when": "axlum.active && !cmake:enableFullFeatureSet"
+      },
+      {
+        "command": "axlum.debug",
+        "key": "shift+f5",
+        "when": "axlum.active && !cmake:enableFullFeatureSet && !inDebugMode"
+      },
+      {
+        "command": "axlum.run",
+        "key": "ctrl+shift+f5",
+        "when": "axlum.active && !cmake:enableFullFeatureSet && !inDebugMode"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "axlum.reconfigure",
+          "when": "view == axlum.project && axlum.active && !axlum.busy",
+          "group": "navigation@1"
+        },
+        {
+          "command": "axlum.stop",
+          "when": "view == axlum.project && axlum.busy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "axlum.stopRun",
+          "when": "view == axlum.project && axlum.hasRuns && !axlum.busy",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "axlum.stopRun",
+          "when": "view == axlum.project && viewItem == axlumRunningProgram",
+          "group": "inline"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "axlum",
+          "title": "Axlum Build",
+          "icon": "media/axlum.svg"
+        }
+      ]
+    },
+    "views": {
+      "axlum": [
+        {
+          "id": "axlum.project",
+          "name": "Axlum Build"
+        }
+      ]
+    },
+    "debuggers": [
+      {
+        "type": "axlum",
+        "label": "Axlum Selected Target",
+        "configurationAttributes": {
+          "launch": {
+            "required": [],
+            "properties": {}
+          }
+        },
+        "initialConfigurations": [
+          {
+            "name": "Axlum: Selected Target",
+            "type": "axlum",
+            "request": "launch"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <functional>
 #include <map>
+#include <regex>
 #include <set>
 #include <stdexcept>
 
@@ -53,9 +54,11 @@ namespace axlum
                 return loaded.at(key);
             active.insert(key);
             loaded[key] = prefix;
-            auto ws = ManifestLoader::loadSingleManifest(manifest, config, build, architecture, platform);
+            const auto localBuild = prefix.empty() ? build : build / "projects" / prefix.substr(0, prefix.size() - 2);
+            auto ws = ManifestLoader::loadSingleManifest(manifest, config, localBuild, architecture, platform);
             if (prefix.empty())
             {
+                result.m_features = ws.m_features;
                 result.m_ide = ws.m_ide;
                 result.m_name = ws.m_name;
                 result.m_manifest = ws.m_manifest;
@@ -69,6 +72,7 @@ namespace axlum
                 result.m_packageManifest->m_model.rootPackage.dependencies.clear();
                 result.m_packageManifest->m_model.rootPackage.dependencyOverrides.clear();
             }
+            result.m_configurationRoots.push_back(ws.m_root);
             std::set<std::string> localAliases;
             for (const auto& ref : ws.m_references)
             {
@@ -80,6 +84,15 @@ namespace axlum
             const auto folder = prefix.empty() ? std::string{} : "projects/" + prefix.substr(0, prefix.size() - 2) + "/";
             auto text = [&](std::string value)
             {
+                const std::regex references(R"(\$\{(artifact|artifactdir|generated):([^:}]+)(:[^}]+)?\})");
+                std::string rebased;
+                std::smatch match;
+                while (std::regex_search(value, match, references))
+                {
+                    rebased += match.prefix().str() + "${" + match[1].str() + ":" + prefix + replace(match[2], "::", "__") + match[3].str() + "}";
+                    value = match.suffix();
+                }
+                value = rebased + value;
                 value = replace(value, "${workspace}", ws.m_root.generic_string());
                 if (!folder.empty())
                     value = replace(value, "${build}", "${build}/" + folder.substr(0, folder.size() - 1));
@@ -87,6 +100,8 @@ namespace axlum
             };
             auto input = [&](const std::string& value)
             {
+                if (value.find("${") != std::string::npos)
+                    return text(value);
                 if (value.starts_with("@build/"))
                     return "@build/" + folder + value.substr(7);
                 return fs::absolute(ws.m_root / value).lexically_normal().generic_string();
@@ -111,6 +126,7 @@ namespace axlum
             };
             auto compile = [&](CompileOptions& c)
             {
+                paths(c.m_forceIncludes);
                 paths(c.m_publicIncludes);
                 paths(c.m_privateIncludes);
                 if (!c.m_pchHeader.empty())
@@ -225,7 +241,73 @@ namespace axlum
                         if (!h.m_depfile.empty())
                             h.m_depfile = output(h.m_depfile);
                     }
+                if (t.m_features.contains("dynamic_outputs"))
+                    for (auto& value : t.m_features["dynamic_outputs"])
+                        value = output(value.get<std::string>());
+                if (t.m_features.contains("outputmanifest"))
+                    for (auto& value : t.m_features["outputmanifest"])
+                        value = output(value.get<std::string>());
+                if (t.m_features.contains("builtin"))
+                {
+                    auto& builtin = t.m_features["builtin"];
+                    builtin["output"] = t.m_outputs.front();
+                    if (builtin.contains("input"))
+                        builtin["input"] = input(builtin["input"].get<std::string>());
+                    if (builtin.contains("values"))
+                        for (auto& [key, value] : builtin["values"].items())
+                            if (value.is_string())
+                                value = text(value.get<std::string>());
+                }
+                if (t.m_features.contains("workingdir"))
+                    for (auto& value : t.m_features["workingdir"])
+                        value = input(value.get<std::string>());
+                if (t.m_features.contains("environment"))
+                    for (auto& env : t.m_features["environment"])
+                        for (auto& [key, value] : env.items())
+                            if (value.is_string())
+                                value = text(value.get<std::string>());
+                if (t.m_features.contains("deployfiles"))
+                    for (auto& spec : t.m_features["deployfiles"])
+                        spec["root"] = input(spec["root"].get<std::string>());
+                if (t.m_features.contains("managedsources"))
+                    for (auto& spec : t.m_features["managedsources"])
+                    {
+                        if (spec.contains("project"))
+                            spec["project"] = input(spec["project"].get<std::string>());
+                        for (const auto* field : {"include", "remove"})
+                            if (spec.contains(field))
+                            {
+                                if (spec[field].is_string())
+                                    spec[field] = input(spec[field].get<std::string>());
+                                else
+                                    for (auto& value : spec[field])
+                                        value = input(value.get<std::string>());
+                            }
+                    }
                 result.m_targets.push_back(std::move(t));
+            }
+            if (!prefix.empty())
+            {
+                if (ws.m_features.contains("test"))
+                    for (auto test : ws.m_features["test"])
+                    {
+                        test["name"] = prefix + test.at("name").get<std::string>();
+                        if (test.contains("target"))
+                            test["target"] = prefix + replace(test["target"].get<std::string>(), "::", "__");
+                        for (const auto* field : {"command", "args"})
+                            if (test.contains(field))
+                                for (auto& value : test[field])
+                                    value = text(value.get<std::string>());
+                        test["workingdir"] = text(test.value("workingdir", std::string("${build}/bin")));
+                        if (test.contains("environment"))
+                            for (auto& [key, value] : test["environment"].items())
+                                if (value.is_string())
+                                    value = text(value.get<std::string>());
+                        result.m_features["test"].push_back(test);
+                    }
+                if (ws.m_features.contains("build_directory"))
+                    for (auto& value : ws.m_features["build_directory"])
+                        result.m_features["build_directory"].push_back(output(value.get<std::string>()));
             }
             for (auto& m : ws.m_modules)
             {
@@ -246,7 +328,10 @@ namespace axlum
                     d.name = prefix + d.name;
                     deps(d.dependencies);
                     if (d.local || d.sourceType == "local")
+                    {
                         d.source = input(d.source);
+                        result.m_localPackageRoots.emplace_back(d.source);
+                    }
                     paths(d.patches);
                     if (!d.cmake.toolchainFile.empty())
                         d.cmake.toolchainFile = input(d.cmake.toolchainFile);

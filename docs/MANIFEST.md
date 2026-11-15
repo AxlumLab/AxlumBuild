@@ -31,7 +31,7 @@ The parser is deliberately **not a complete TOML 1.0 implementation**. It suppor
 - `@build/relative/file.cpp` names a generated **input** in the configured build directory.
 - Codegen `outputs` and `depfile` are **relative to the build directory**, with traversal outside rejected.
 - Codegen `args` allow `${workspace}`, `${build}`, `${config}` (substituted as **one argument**, not shell text). `${config}` produces `Debug` or `Release`.
-- `tool = "@target/SomeGenerator"` resolves to a host executable target output, which must be a direct public/private dependency of the codegen target. Cross-compiled host tools are not supported.
+- `tool = "@target/SomeGenerator"` resolves to a host executable target output, with automatic dependency tracking. Mark an executable `hosttool(true)` to build it with the host toolchain while cross-compiling.
 - Output layout: `<build>/obj/<target>/<module>/...`, `<build>/lib/...`, `<build>/bin/...`, `<build>/dotnet/<target>/...`, `<build>/generated/...` as declared.
 - Source files have unique ownership within a workspace. Reusing the identical source file in multiple targets is intentionally rejected at this stage.
 

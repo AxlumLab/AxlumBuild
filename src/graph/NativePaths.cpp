@@ -6,12 +6,67 @@
 
 #include "graph/NativePaths.hpp"
 #include "core/Process.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 namespace axlum
 {
     std::string NativePaths::expandBuildValue(std::string value, const Workspace& ws, const fs::path& build, Configuration config, const std::string& target)
     {
+        for (const auto& group : {std::string("artifact"), std::string("artifactdir"), std::string("generated"), std::string("package_tool")})
+        {
+            const auto prefix = "${" + group + ":";
+            for (auto pos = value.find(prefix); pos != std::string::npos; pos = value.find(prefix))
+            {
+                auto end = value.find('}', pos);
+                if (end == std::string::npos)
+                    throw std::runtime_error("unterminated artifact reference");
+                auto key = value.substr(pos + prefix.size(), end - pos - prefix.size());
+                std::string replacement;
+                if (group == "package_tool")
+                {
+                    if (!ws.m_features.value("tool_paths", nlohmann::json::object()).contains(key))
+                        throw std::runtime_error("unresolved package tool: " + key);
+                    replacement = ws.m_features["tool_paths"][key].get<std::string>();
+                }
+                else if (group == "generated")
+                {
+                    auto colon = key.find(':');
+                    if (colon == std::string::npos)
+                        throw std::runtime_error("generatedfile requires path");
+                    auto name = key.substr(0, colon);
+                    auto path = fs::absolute(build / key.substr(colon + 1)).lexically_normal();
+                    if (!FileSystem::isWithin(path, build))
+                        throw std::runtime_error("generated reference escapes build");
+                    auto it = std::find_if(
+                        ws.m_targets.begin(),
+                        ws.m_targets.end(),
+                        [&](const auto& t)
+                        {
+                            return t.m_name == name;
+                        }
+                    );
+                    if (it == ws.m_targets.end() || std::none_of(
+                                                        it->m_outputs.begin(),
+                                                        it->m_outputs.end(),
+                                                        [&](const auto& o)
+                                                        {
+                                                            return fs::absolute(build / o).lexically_normal() == path;
+                                                        }
+                                                    ))
+                        throw std::runtime_error("undeclared generated reference: " + key);
+                    replacement = path.generic_string();
+                }
+                else
+                {
+                    if (!ws.m_features.value("artifacts", nlohmann::json::object()).contains(key))
+                        throw std::runtime_error("unresolved target artifact: " + key);
+                    fs::path path = ws.m_features["artifacts"][key].get<std::string>();
+                    replacement = (group == "artifactdir" ? path.parent_path() : path).generic_string();
+                }
+                value.replace(pos, end - pos + 1, replacement);
+            }
+        }
         for (const auto& [key, replacement] : std::vector<std::pair<std::string, std::string>>{
                  {"${workspace}", ws.m_root.string()}, {"${build}", build.string()}, {"${config}", BuildModel::toString(config)}, {"${target}", target}
              })

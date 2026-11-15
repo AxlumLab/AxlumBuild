@@ -34,6 +34,14 @@ namespace axlum
         action.m_gnuRsp = tc.m_kind != CompilerKind::MSVC;
         action.m_inputs = {header, tc.m_cppCompiler};
         action.m_argv = commonArguments;
+        for (std::size_t i = 1; i < commonArguments.size(); ++i)
+        {
+            const auto& arg = commonArguments[i];
+            if (arg.starts_with("/FI"))
+                action.m_inputs.emplace_back(arg.substr(3));
+            else if (arg == "-include" && i + 1 < commonArguments.size())
+                action.m_inputs.emplace_back(commonArguments[++i]);
+        }
         if (tc.m_kind == CompilerKind::MSVC)
         {
             const auto pch = directory / "precompiled.pch";

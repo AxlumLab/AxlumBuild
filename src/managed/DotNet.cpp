@@ -116,6 +116,8 @@ namespace axlum
             "-p:ArtifactsPath=" + artifacts.string(),
             "-p:AxlumGeneratedDir=" + trailing(stamp.parent_path().parent_path().parent_path() / "generated")
         };
+        if (opts.contains("--imports"))
+            properties.push_back("-p:CustomAfterMicrosoftCommonTargets=" + fs::absolute(opts.at("--imports")).string());
         if (const auto* jobs = std::getenv("AXLUM_BUILD_JOBS"); jobs && *jobs)
             properties.push_back("-m:" + std::to_string(std::stoi(jobs)));
         std::vector<std::string> restore = {dotnet, "restore", project.string()};
@@ -271,6 +273,8 @@ namespace axlum
                 std::string("-p:PublishTrimmed=") + (trimmed ? "true" : "false"),
                 std::string("-p:PublishSingleFile=") + (single ? "true" : "false")
             };
+            if (t.m_features.contains("managedsources"))
+                command.push_back("-p:CustomAfterMicrosoftCommonTargets=" + fs::absolute(build / "dotnet" / t.m_name / "GeneratedSources.targets").string());
             if (!rid.empty())
                 command.insert(command.end(), {"--runtime", rid});
             if (library)

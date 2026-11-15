@@ -53,6 +53,7 @@ endfunction()
 # Keep imported dependencies in the root directory scope for all subprojects.
 find_package(OpenSSL REQUIRED)
 find_package(CLI11 CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 if(AXLUM_USE_INSTALLED_RHODIUM)
     find_package(Rhodium CONFIG REQUIRED)
@@ -86,6 +87,7 @@ add_library(axlum-build-core STATIC
     src/managed/NativeProject.cpp
     src/managed/Project.cpp
     src/manifest/Composition.cpp
+    src/manifest/Features.cpp
     src/manifest/LuaManifest.cpp
     src/manifest/Manifest.cpp
     src/model/Model.cpp
@@ -99,7 +101,7 @@ if(MSVC)
 endif()
 axlumConfigureTarget(axlum-build-core)
 target_include_directories(axlum-build-core PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
-target_link_libraries(axlum-build-core PRIVATE Rhodium::Core OpenSSL::Crypto)
+target_link_libraries(axlum-build-core PUBLIC nlohmann_json::nlohmann_json PRIVATE Rhodium::Core OpenSSL::Crypto)
 
 
 # Command-line application
@@ -153,11 +155,22 @@ if(AXLUM_BUILD_TESTS)
     add_test(NAME native-plan COMMAND axlum-native-plan-tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
+    axlumAddPythonTest(dsl-features DslFeatures.py TIMEOUT 900)
+    axlumAddPythonTest(dsl-convenience DslConvenience.py NO_EXAMPLES TIMEOUT 300)
+    axlumAddPythonTest(dsl-validation DslValidation.py TIMEOUT 600)
     axlumAddPythonTest(integration Integration.py TIMEOUT 600)
     axlumAddPythonTest(cli-dsl CliDsl.py NO_EXAMPLES TIMEOUT 600)
     axlumAddPythonTest(packages Packages.py TIMEOUT 600)
     axlumAddPythonTest(native-features NativeFeatures.py TIMEOUT 600)
     axlumAddPythonTest(modules-reconfigure ModulesReconfigure.py TIMEOUT 360)
+    axlumAddPythonTest(ide-organization IdeOrganization.py NO_EXAMPLES TIMEOUT 360)
+    # Requires a locally installed VS Code and C/C++ debugger; uses an isolated user profile.
+    axlumAddPythonTest(editor-integration EditorIntegration.py NO_EXAMPLES TIMEOUT 360 SKIP_REGEX "SKIP: local Windows|SKIP: Microsoft C/C\\+\\+")
+    find_program(AXLUM_NODE_EXECUTABLE node)
+    if(AXLUM_NODE_EXECUTABLE)
+        add_test(NAME editor-model COMMAND "${AXLUM_NODE_EXECUTABLE}" --test "${PROJECT_SOURCE_DIR}/editors/vscode/test/model.test.js")
+    endif()
+    axlumAddPythonTest(incremental-ide IncrementalIde.py NO_EXAMPLES TIMEOUT 300)
     axlumAddPythonTest(ide-workspace IdeWorkspace.py TIMEOUT 600)
     axlumAddPythonTest(cross-matrix CrossMatrix.py TIMEOUT 600 SKIP_REGEX "SKIP: real Android")
     axlumAddPythonTest(diagnostics Diagnostics.py NO_EXAMPLES TIMEOUT 600)

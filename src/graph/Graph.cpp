@@ -14,9 +14,11 @@
 #include "graph/Resources.hpp"
 #include "graph/Runtime.hpp"
 #include "managed/NativeProject.hpp"
+#include "manifest/Features.hpp"
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <regex>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -182,7 +184,14 @@ namespace axlum
             visit(i);
     }
 
-    BuildGraph BuildPlanner::planBuild(const Workspace& workspace, const Toolchain& tc, const fs::path& buildDir, Configuration cfg, const fs::path& self)
+    BuildGraph BuildPlanner::planBuild(
+        const Workspace& workspace,
+        const Toolchain& tc,
+        const fs::path& buildDir,
+        Configuration cfg,
+        const fs::path& self,
+        const BuildGraph* hostGraph
+    )
     {
         auto selected = workspace;
         const auto platform = tc.m_platform.empty() ? (ToolchainDiscovery::hostTriple().find("windows") != std::string::npos ? "windows"
@@ -190,7 +199,7 @@ namespace axlum
                                                                                                                              : "linux")
                                                     : tc.m_platform;
         BuildModel::selectTargets(selected, cfg, tc.m_architecture.empty() ? "x64" : tc.m_architecture, platform);
-        const auto ws = ModulePlanner::planModules(selected, tc);
+        auto ws = ModulePlanner::planModules(selected, tc);
         BuildModel::validateWorkspace(ws);
         if (!ws.m_configurations.empty() && std::find(ws.m_configurations.begin(), ws.m_configurations.end(), cfg) == ws.m_configurations.end())
             throw std::runtime_error("configuration " + BuildModel::toString(cfg) + " is not declared by the workspace");
@@ -203,6 +212,8 @@ namespace axlum
             targets[t.m_name] = &t;
         std::unordered_map<std::string, Interface> exported;
         BuildGraph graph;
+        if (hostGraph)
+            graph = *hostGraph;
         graph.m_environment = tc.m_environment;
         graph.m_disabledTargets = ws.m_disabledTargets;
         for (const auto& t : ws.m_targets)
@@ -215,7 +226,15 @@ namespace axlum
         for (const auto& target : ws.m_targets)
         {
             std::vector<fs::path> outputs;
-            if (target.m_kind == TargetKind::Codegen)
+            if (!target.m_hostArtifact.empty())
+            {
+                if (target.m_features.contains("host_outputs"))
+                    for (const auto& output : target.m_features["host_outputs"])
+                        outputs.push_back(output.get<std::string>());
+                else
+                    outputs.push_back(target.m_hostArtifact);
+            }
+            else if (target.m_kind == TargetKind::Codegen)
             {
                 for (const auto& f : target.m_outputs)
                     outputs.push_back((outputRoot / f).lexically_normal());
@@ -255,6 +274,10 @@ namespace axlum
             graph.m_targetKinds[target.m_name] = target.m_kind;
         }
 
+        for (const auto& [name, outputs] : graph.m_targetOutputs)
+            if (!outputs.empty())
+                ws.m_features["artifacts"][name] = outputs.front().generic_string();
+
         for (const auto i : topo)
         {
             const auto& t = ws.m_targets[i];
@@ -291,20 +314,24 @@ namespace axlum
         for (const auto i : topo)
         {
             const auto& t = ws.m_targets[i];
-            if (t.m_kind == TargetKind::HeaderOnly)
+            if (t.m_kind == TargetKind::HeaderOnly || !t.m_hostArtifact.empty())
                 continue;
             if (t.m_kind == TargetKind::Codegen)
             {
                 Action action;
                 action.m_name = "Generate " + t.m_name;
+                action.m_restat = true;
                 action.m_owner = t.m_name;
                 action.m_workingDirectory = t.m_sourceRoot.empty() ? ws.m_root : t.m_sourceRoot;
                 action.m_outputs = graph.m_targetOutputs.at(t.m_name);
+                if (t.m_features.contains("dynamic_outputs"))
+                    for (const auto& file : t.m_features["dynamic_outputs"])
+                        action.m_dynamicOutputs.push_back(outputRoot / file.get<std::string>());
                 action.m_orderOnly = orderOnlyFor(t);
-                std::string executable = t.m_tool;
+                std::string executable = NativePaths::expandBuildValue(t.m_tool, ws, outputRoot, cfg, t.m_name);
                 if (executable.starts_with("@target/"))
                 {
-                    if (tc.m_host != tc.m_target)
+                    if (tc.m_host != tc.m_target && targets.at(executable.substr(8))->m_hostArtifact.empty())
                         throw std::runtime_error("cross compilation requires an external host codegen tool: " + executable);
                     std::string toolTarget = executable.substr(8);
                     if (!targets.contains(toolTarget) || targets.at(toolTarget)->m_kind != TargetKind::Executable)
@@ -313,7 +340,8 @@ namespace axlum
                     if (std::find(deps.begin(), deps.end(), toolTarget) == deps.end())
                         throw std::runtime_error("codegen '" + t.m_name + "' must depend on tool target '" + toolTarget + "'");
                     executable = graph.m_targetOutputs.at(toolTarget).at(0).string();
-                    action.m_inputs.push_back(executable);
+                    for (const auto& output : graph.m_targetOutputs.at(toolTarget))
+                        addUnique(action.m_inputs, output);
                 }
                 else if (executable.find('/') != std::string::npos || executable.find('\\') != std::string::npos)
                 {
@@ -330,9 +358,21 @@ namespace axlum
                 }
                 action.m_argv.push_back(executable);
                 for (const auto& arg : t.m_args)
+                {
+                    const std::regex references(R"(\$\{(artifact|artifactdir|generated|package_tool):([^:}]+)(?::[^}]+)?\})");
+                    for (std::sregex_iterator it(arg.begin(), arg.end(), references), end; it != end; ++it)
+                    {
+                        auto name = (*it)[2].str();
+                        if ((*it)[1] == "package_tool")
+                            action.m_inputs.push_back(ws.m_features.at("tool_paths").at(name).get<std::string>());
+                        else
+                            for (const auto& file : graph.m_targetOutputs.at(name))
+                                addUnique(action.m_inputs, file);
+                    }
                     action.m_argv.push_back(NativePaths::expandBuildValue(arg, ws, outputRoot, cfg, t.m_name));
+                }
                 for (const auto& input : t.m_inputs)
-                    action.m_inputs.push_back(resolve(ws, outputRoot, input));
+                    action.m_inputs.push_back(resolve(ws, outputRoot, NativePaths::expandBuildValue(input, ws, outputRoot, cfg, t.m_name)));
                 if (!t.m_depfile.empty())
                 {
                     action.m_depfile = outputRoot / t.m_depfile;
@@ -464,6 +504,23 @@ namespace axlum
                         for (const auto& include : tc.m_systemIncludes)
                             args.push_back("/external:I" + include.string());
                     }
+                    if (!options.m_charset.empty())
+                    {
+                        if (options.m_charset != "UTF-8" && options.m_charset != "utf-8")
+                            throw std::runtime_error("characterset currently supports UTF-8");
+                        if (tc.m_kind == CompilerKind::MSVC)
+                            args.push_back("/utf-8");
+                        else if (tc.m_kind == CompilerKind::GCC)
+                            args.push_back("-finput-charset=UTF-8");
+                    }
+                    for (const auto& file : options.m_forceIncludes)
+                    {
+                        auto path = resolve(ws, outputRoot, file).string();
+                        if (tc.m_kind == CompilerKind::MSVC)
+                            args.push_back("/FI" + path);
+                        else
+                            args.insert(args.end(), {"-include", path});
+                    }
                     return args;
                 };
                 auto sources = module.m_sources;
@@ -565,6 +622,8 @@ namespace axlum
                     action.m_source = src;
                     action.m_workingDirectory = t.m_sourceRoot.empty() ? ws.m_root : t.m_sourceRoot;
                     action.m_inputs = {src};
+                    for (const auto& file : options.m_forceIncludes)
+                        action.m_inputs.push_back(resolve(ws, outputRoot, file));
                     action.m_outputs = {obj};
                     action.m_orderOnly = orderOnlyFor(t);
                     action.m_rsp = !resource;
@@ -645,7 +704,7 @@ namespace axlum
                 if (!linked.insert(name).second)
                     return;
                 const auto& dep = *targets.at(name);
-                if (tc.m_kind == CompilerKind::MSVC &&
+                if (tc.m_kind == CompilerKind::MSVC && !dep.m_features.value("system_interface", false) &&
                     (dep.m_kind == TargetKind::StaticLibrary || (dep.m_kind == TargetKind::HeaderOnly && !dep.m_link.m_libraries.empty())) &&
                     (NativeOptions::runtimePolicy(dep.m_compile) != NativeOptions::runtimePolicy(t.m_compile) ||
                      dep.m_compile.m_debugCRT.value_or(BuildModel::isDebug(cfg)) != t.m_compile.m_debugCRT.value_or(BuildModel::isDebug(cfg))))
@@ -777,7 +836,7 @@ namespace axlum
                         addUnique(link.m_inputs, file);
                     }
                     else
-                        link.m_argv.push_back(lib);
+                        link.m_argv.push_back(fs::path(lib).extension().empty() ? lib + ".lib" : lib);
                 }
                 for (const auto& f : both(t.m_link.m_linkFlags, externalFlags))
                     link.m_argv.push_back(f);
@@ -871,6 +930,7 @@ namespace axlum
         }
         RuntimePlanner::planRuntimeCopies(graph, ws, outputRoot, cfg, self);
         HookPlanner::planHooks(graph, ws, tc, outputRoot, cfg);
+        DslFeatures::plan(graph, ws, tc, outputRoot, cfg, self);
         graph.validate();
         return graph;
     }

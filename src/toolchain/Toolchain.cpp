@@ -528,6 +528,55 @@ namespace axlum
         throw std::runtime_error("compiler has no supported C++ dialect for Latest: " + tc.m_cppCompiler);
     }
 
+    void ToolchainDiscovery::reuseSearchPath(Toolchain& tc, const fs::path& buildDirectory)
+    {
+        const auto file = buildDirectory / "axlum.environment.json";
+        if (!fs::is_regular_file(file))
+            return;
+        const auto previous = FileSystem::readEnvironment(file);
+        auto semantic = [](const auto& environment)
+        {
+            std::map<std::string, std::string> result;
+            for (const auto& [key, value] : environment)
+            {
+                auto name = key;
+#ifdef _WIN32
+                std::transform(
+                    name.begin(),
+                    name.end(),
+                    name.begin(),
+                    [](unsigned char c)
+                    {
+                        return static_cast<char>(std::tolower(c));
+                    }
+                );
+#endif
+                if (name != "PATH" && name != "path" && name != "AXLUM_TOOLCHAIN_FINGERPRINT" && name != "axlum_toolchain_fingerprint")
+                    result[name] = value;
+            }
+            return result;
+        };
+        // All compiler/SDK settings must still agree. An IDE's PATH additions alone
+        // do not change the selected absolute compiler and must not invalidate outputs.
+        if (semantic(previous) != semantic(tc.m_environment))
+            return;
+        for (const auto& [key, value] : previous)
+            if (key == "PATH" || key == "Path")
+            {
+                std::erase_if(
+                    tc.m_environment,
+                    [](const auto& item)
+                    {
+                        return item.first == "PATH" || item.first == "Path";
+                    }
+                );
+                tc.m_environment[key] = value;
+                if (tc.m_profile)
+                    tc.m_profile->environment = tc.m_environment;
+                break;
+            }
+    }
+
     std::string ToolchainDiscovery::toolchainFingerprint(const Toolchain& tc, Configuration config)
     {
         std::string data = tc.m_profile ? rhodium::Toolchain::contentHash(*tc.m_profile, BuildModel::toString(config)) : tc.m_id;
@@ -557,8 +606,7 @@ namespace axlum
                 {
                     const auto file = directory / name;
                     if (fs::is_regular_file(file))
-                        data +=
-                            file.generic_string() + std::to_string(fs::file_size(file)) + fileTimestamp(file);
+                        data += file.generic_string() + std::to_string(fs::file_size(file)) + fileTimestamp(file);
                 }
             }
         for (const auto& [key, value] : tc.m_environment)

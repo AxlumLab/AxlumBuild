@@ -141,7 +141,13 @@ Generated C# targets support `csdefines`, `nullable`, `cslangversion`, unsafe/ov
 
 ## Code generation
 
-`kind("Codegen")` accepts `tool("python3")`, `args({...})`, `inputs({...})`, `outputs({...})`, `depfile("relative.d")`. Arguments support `${workspace}`, `${build}`, `${config}`. Outputs and depfiles stay under the build directory. `tool("@target/Generator")` selects a host executable target which must also be a declared dependency. Generated native/C# source paths use `@build/generated/File.cpp`/`.cs`.
+`kind("Codegen")` accepts `tool("python3")`, `args({...})`, `inputs({...})`, `outputs({...})`, `depfile("relative.d")`. Arguments support `${workspace}`, `${build}`, `${config}`. Outputs and depfiles stay under the build directory. `tool("@target/Generator")` selects a runnable executable target and adds its dependency automatically. Generated native/C# source paths use `@build/generated/File.cpp`/`.cs`.
+
+Codegen actions use Ninja `restat`: generators may preserve timestamps when their
+output content is unchanged, avoiding downstream rebuilds and repeated generation.
+On Windows, compiler dependencies and graph paths share the filesystem's path
+spelling so generated header changes take effect in the same build. The AxlumBuild
+driver is also a tracked action input, refreshing cached dependencies after an upgrade.
 
 ## Embedded Rhodium packages
 
@@ -173,7 +179,7 @@ target("App")
 - `packages` gives the current target a private package interface. `public_packages` also exposes headers/defines to consumers. Static-library link dependencies propagate even when compile settings are private. `dependencies` names other declared packages and supplies their transitive interfaces; it does not invent missing recipes or CMake targets inside a package build.
 - Missing packages, duplicate names/scope attachments, invalid recipes and dependency cycles fail. Native packages cannot be attached to managed targets; use MSBuild/NuGet for managed dependencies.
 - `configure` restores source/artifacts using Rhodium. Each build (including direct Ninja execution) checks the configuration and restores changed packages before executing actions; `graph` also refreshes the configuration. Lua/includes, globs and local package source changes do not require a separate configure invocation.
-- `configure --locked` requires dependency inputs to match `tpkg.lock.toml`. Local sources remain mutable: locked mode validates recipe/toolchain/configuration identity, not local file contents. Commit lockfiles, not `.rhodium/` caches. Existing `.tpkg/` state is honored by Rhodium.
+- `configure --locked` requires dependency inputs to match Rhodium's selected `rhodium.lock.toml` (or an existing legacy `tpkg.lock.toml`). Local sources remain mutable: locked mode validates recipe/toolchain/configuration identity, not local file contents. Commit lockfiles, not `.rhodium/` caches. Existing `.tpkg/` state is honored by Rhodium.
 - Package builds use the same discovered Rhodium profile and configuration as native actions. Windows packages match their consumers' Static/Dynamic CRT policy, and conflicting consumers or recipes are rejected. Debug/Release artifacts have distinct identities. This is not a complete compiler/SDK ABI compatibility validator.
 - Structured include dirs, defines, library dirs, concrete library files, system libraries and Apple frameworks enter the native graph. Exported package DLL/SO runtime files are copied beside consuming native binaries. Framework metadata is supported on macOS/iOS toolchains.
 
@@ -202,3 +208,270 @@ See [IDE_PROJECTS.md](IDE_PROJECTS.md) for `ide --format vscode|vs|xcode|android
 settings, format-specific fragments and VSCode JSON patches. Filters apply.
 Embedders can pass `IDEProjectCustomizer` callbacks to `IDEGenerator::generateIDE`. Signatures
 and examples are documented in [FINAL_GAPS.md](FINAL_GAPS.md).
+
+Target-scoped `ide_target({group="Applications/Demos", display_name="Demo", visible=true,
+startup=true})` controls VS/VS Code presentation without changing build target names.
+Groups use slash-separated paths. Hidden targets remain buildable dependencies.
+Only one visible executable per configuration may declare `startup=true`.
+By default applications, registered tests, host tools, libraries and generators
+are grouped by role; internal system/template targets are hidden.
+
+
+## Project options and generated configuration
+
+```lua
+local tests = option("tests", {type="bool", default=true, description="Build tests"})
+local renderer = option("renderer", {type="enum", values={"vk","gl"}, default="vk"})
+local sdk = option("sdk", {type="path", default="vendor/sdk"})
+preset("ci", {config="Debug", options={tests=true, renderer="vk"}})
+local config = configure_file("include/Config.hpp.in", "generated/Config.hpp", {
+    ENABLED=tests, NAME=renderer
+})
+local paths = configure_header("generated/Paths.hpp", {DATA="${workspace}/data"})
+target("App")
+    kind("ConsoleApp")
+    files("Main.cpp")
+    private_deps({config,paths})
+    forceincludes("@build/generated/Paths.hpp")
+    characterset("UTF-8")
+```
+
+`option` returns a bool or string. Types are bool/string/enum/path. Names and enum
+values are checked, and duplicate/unknown options fail. A path is a path string,
+not a promise that a directory already exists. `configure --option NAME=VALUE`
+overrides a preset; presets override saved choices; saved choices override defaults.
+Only explicit choices are saved in `<B>/axlum.options.json`, so changing a default
+still affects builds without an explicit override. Automatic refresh preserves
+choices. Failed configuration restores previous choices. `options -S . -B build
+--json` lists declarations, descriptions, choices and effective values without
+restoring packages. Matrix/preset entries preserve independent choices.
+
+`configure_file` and `configure_header` return generated target names for explicit
+dependencies. Outputs are owned Codegen outputs under the build directory. Templates
+replace `@NAME@` strictly and support `@NAME:cstr@` for an escaped C++ string literal.
+Booleans render as 0/1. Headers generate `#pragma once` and validated macro names,
+with escaped string values. `${workspace}`, `${build}`, `${config}` and artifact
+references may appear in string values. Inputs/options/commands are tracked;
+unchanged content preserves timestamps. No Python interpreter is needed.
+
+`forceincludes` accepts native header paths at workspace/target/module scope and
+tracks them as compiler inputs. It maps to MSVC /FI and GCC/Clang -include;
+`characterset("UTF-8")` maps to MSVC /utf-8, GCC input charset, and Clang's native
+UTF-8 behavior. ConsoleApp defaults to the console subsystem on MSVC. Windows
+executables/shared libraries receive the standard SDK base libraries. Bare native
+MSVC library names receive `.lib` automatically.
+
+## Tracked artifact references and generator sets
+
+```lua
+target("Generator")
+    kind("ConsoleApp")
+    hosttool(true)
+    files("Generator.cpp")
+target("Generate")
+    kind("Codegen")
+    tool("@target/Generator")
+    args({"${build}/generated/Outputs.json"})
+    inputset("schema", {"**.json"})
+    environment({SCHEMA_MODE="strict"})
+    workingdir("${workspace}")
+    outputmanifest("generated/Outputs.json")
+target("Library")
+    kind("StaticLibrary")
+    generatedsources("Generate", {extensions={".cpp"}})
+```
+
+`targetfile("Name")`, `targetoutputdir("Name")` and
+`generatedfile("Producer", "generated/File.hpp")` produce tracked references.
+Codegen tools/arguments/inputs resolve them after artifacts are declared, including
+forward references. Argument/input references and `tool("@target/Name")` add target
+dependencies automatically. `generatedfile` checks the producer's declared output
+ownership. Output directories and platform executable suffixes need no duplication.
+
+`inputset(root, patterns)` tracks sorted file membership as well as file contents;
+changes are discovered on automatic refresh. `byproducts` adds required owned
+outputs, checked and cleaned like `outputs`. `workingdir` and `environment` apply
+to a target's actions; maps overlay the discovered toolchain environment.
+
+`outputmanifest` names an owned JSON file containing an array of relative output
+paths, relative to the manifest's directory. Its entries must remain within that
+directory. A generator must write its manifest and files atomically as appropriate
+and preserve timestamps for unchanged content. `generatedsources` selects output
+extensions from that producer. Configure/refresh builds the generator dependency
+closure before planning consumers, so the first build and additions/removals work
+in the same invocation. Bootstrap graphs keep independent Ninja dependency databases. After bootstrap,
+the consumer graph retains output-verification actions and ownership for clean,
+without rerunning the producers. This avoids concurrent nested writes to Ninja's
+dependency/log databases. Generator failure aborts graph replacement; malformed,
+escaping, conflicting or missing outputs fail. Removed owned files are cleaned
+through the ordinary output ledger. This is explicit manifest-based discovery,
+not an untracked glob over an arbitrary generated directory.
+
+`hosttool(true)` builds an executable and its transitive dependency closure with
+the host platform/architecture/toolchain under `<B>/host`. Native declarations are
+reevaluated for that host context, including platform conditions and packages.
+Configure/refresh incrementally builds the host graph with its own environment
+and dependency database. The target graph retains output-verification actions and
+uses the resulting executable and runtime dependencies. Cross-toolchain package
+storage is isolated from target storage. Static/shared dependencies can exist in
+both contexts without sharing objects. Cross-compiled executable targets without
+hosttool cannot be used as runnable generators.
+
+## Tests and runtime resources
+
+```lua
+test("Unit", {
+    target="UnitTests", args={"--gtest_filter=Core.*"},
+    workingdir="${build}/bin", environment={MODE="test"},
+    timeout=180, labels={"unit","native"}
+})
+test("Managed", {target="ManagedTests", labels={"managed"}})
+-- Or command={"python", "Check.py"}, with args and the same execution settings.
+
+target("App")
+    kind("ConsoleApp")
+    files("Main.cpp")
+    deployfiles("assets", {patterns={"**"}, destination="assets"})
+```
+
+`test` registers native executables, an existing/generated managed project, or an
+explicit argv command. Managed target tests discover the single runnable assembly
+from isolated SDK artifacts; multi-TFM/ambiguous projects require an explicit
+command. `axlum-build test -B build` builds then runs tests through CTest, which
+provides timeouts, output on failure and reporting. CTest must be on PATH. `--no-build`,
+`-R/--filter` and `-L/--label` control execution. Registrations are also exported to
+`CTestTestfile.cmake`; existing CTest tooling works directly. Duplicate names and
+non-runnable target kinds fail configuration.
+
+`deployfiles` copies a filtered source directory relative to the native target's
+runtime directory, preserving subdirectories. Membership is refreshed, unchanged
+content is not rewritten, collisions fail graph validation, and removed sources
+lose their owned deployed files. Destination paths must stay in the build tree.
+Use the existing install APIs for the desired SDK/install contract.
+
+## Existing MSBuild project generated sources
+
+```lua
+target("Managed")
+    kind("DotNetProject")
+    project("Managed/App.csproj")
+    private_deps("Bindings")
+    managedsources({
+        include={"@build/generated/csharp/*.cs"},
+        remove={"Managed/Generated/**/*.cs"}
+    })
+```
+
+A generated targets import applies Compile Remove/Include to that csproj without
+editing it. `project="Managed/Dependency.csproj"` in the table instead applies the
+items to an explicitly selected ProjectReference dependency. The import checks
+MSBuildProjectFullPath, so it does not accidentally compile bindings into every
+referenced project. Build/restore/publish use the import; project files continue
+to own framework selection, references and compilation policy.
+
+## System dependencies and host tool packages
+
+```lua
+when("windows", function()
+    rhodium.system("directx", {links={"d3d12","dxgi"}, defines={"USE_DX12"}})
+end)
+local python = host_program("python", {
+    path="python", version_args={"--version"}, version_pattern="Python 3"
+})
+local script = rhodium.tool("schema-tool", {
+    source="https://example.invalid/schema-tool.zip", source_type="archive",
+    sha256="<archive sha256>", build="header_only", export_defines=false,
+    artifacts={include_dirs={"."}}, executable="schema.py"
+})
+target("Generated")
+    kind("Codegen")
+    tool(python)
+    args({script,"${build}/schema.cpp"})
+    outputs("schema.cpp")
+```
+
+`rhodium.system` declares a source-free interface using links/includedirs/defines/
+frameworks, attached through packages/public_packages with ordinary visibility.
+It does not hash a placeholder source directory. `host_program` requires a host
+executable and optionally checks its version output against a regex. It uses
+existing executable lookup, without introducing another SDK detector.
+
+`rhodium.tool` accepts the existing Rhodium source/build/artifact recipe plus an
+artifact-relative executable (which may also be a jar or interpreted script).
+Rhodium acquires/builds/caches/checks the archive through its normal resolver.
+Tool recipes are evaluated/restored with the host toolchain in isolated package
+storage; tool paths are tracked action inputs. They are not linked as target
+libraries. Existing package CRT inference already follows native consumers and
+rejects incompatible explicit policies. No separate downloader/cache or Rhodium
+CLI is required. The bridge follows Rhodium's new/legacy lockfile path selection.
+
+`build_directory("relative/path")` creates a confined build-tree directory during
+configuration, for tool/test scratch directories that have no file artifact.
+
+## Declarative tables and file-list helpers
+
+All forms below are standard Lua; existing callback and sequential forms remain valid.
+
+```lua
+local sources = matchfiles({"src/**/*.cpp", "platform/common/*.cpp"},
+                           {"**/tests/**", "**/legacy.cpp"})
+target("App", {
+    kind = "ConsoleApp",
+    cppdialect = "c++20",
+    files = sources,
+    includedirs = {"include"},
+    private_deps = {"Core"},
+})
+when("windows", { defines = {"APP_WINDOWS"}, links = {"user32"} })
+settings { defines = list.unique(list.concat({"COMMON"}, {"FEATURE_A"})) }
+local names = list.prefix("generated/", {"One.cpp", "Two.cpp"})
+```
+
+`matchfiles(patterns, exclusions)` returns a sorted, deduplicated Lua array of
+workspace-relative files. Patterns and exclusions each accept a string or array.
+It uses the same wildcard and build-directory exclusion rules as `files`.
+Explicit missing files are errors; unmatched wildcard patterns return an empty
+array. Scan membership is refreshed by the normal build configuration check.
+`files` already accepts glob patterns directly; use `matchfiles` when the resulting
+list is also needed by Lua code or another API.
+
+`list.concat` combines strings/arrays without modifying them; `list.unique`
+retains the first occurrence; `list.prefix` prepends a string to each item.
+`settings` validates all keys and applies them in a fixed order. Supported keys:
+`kind`, `language`, `project`, `cppdialect`, `cdialect`, `files`, `removefiles`,
+`includedirs`, `public_includedirs`, `defines`, `public_defines`, `forceincludes`,
+`characterset`, `public_deps`, `private_deps`, `interface_deps`, `packages`,
+`public_packages`, `links`, `libdirs`, `cflags`, `cxxflags`, `linkoptions`,
+`optimize`, `symbols`, `tool`, `args`, `inputs`, `outputs`, `workingdir`, `environment`.
+
+Use `when(condition, { ... })` for conditional settings. Keep
+`when(condition, function() ... end)` for loops, declarations and other procedural
+logic. Table expressions are evaluated before the condition; expensive or
+platform-specific computations should stay inside a callback. No custom lambda
+syntax or Lua source preprocessing is introduced.
+
+## GoogleTest discovery
+
+```lua
+gtest_discover_tests("UnitTests", {
+    labels = {"unit"},
+    timeout = 60,
+    workingdir = "${build}/bin",
+    environment = {TEST_DATA = "${workspace}/tests/data"},
+})
+```
+
+Register after declaring the native executable target (GoogleTest itself remains
+an ordinary dependency). A build action runs `--gtest_list_tests` after the binary
+and runtime artifacts are ready. It exports individual CTest cases and editor
+metadata, including parameterized cases. Unchanged builds do not repeat discovery;
+rebuilding the binary refreshes the list and removes stale cases. Names default to
+`<target>/<suite>.<case>`; `name` overrides the registration prefix. `DISABLED_`
+cases remain visible and are disabled in CTest and the editor.
+
+`args`, `workingdir`, `environment`, `labels` and test `timeout` work like `test`.
+Cross-compiled binaries require an `emulator` argv array to execute on the host.
+Discovery is post-build; there is no PRE_TEST mode in this version. Before the
+first build CTest lists a `NOT_BUILT` placeholder. Building only the registered
+target is sufficient to generate its cases. CTest execution remains available via
+`axlum-build test` or `ctest --test-dir <build>`.

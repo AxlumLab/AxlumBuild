@@ -59,7 +59,8 @@ namespace axlum
                     if (tool.starts_with("@target/"))
                     {
                         const auto name = tool.substr(8);
-                        if (tc.m_host != tc.m_target || !targets.contains(name) || targets.at(name)->m_kind != TargetKind::Executable)
+                        if (!targets.contains(name) || targets.at(name)->m_kind != TargetKind::Executable ||
+                            (tc.m_host != tc.m_target && targets.at(name)->m_hostArtifact.empty()))
                             throw std::runtime_error("build action requires a host executable target: " + tool);
                         tool = graph.m_targetOutputs.at(name).front().string();
                         if (name != t.m_name)
@@ -102,6 +103,11 @@ namespace axlum
             outputs.insert(outputs.end(), pre.begin(), pre.end());
             outputs.insert(outputs.end(), post.begin(), post.end());
             completion[t.m_name] = post.empty() ? pre : post;
+            if (t.m_kind == TargetKind::Codegen)
+            {
+                auto& done = completion[t.m_name];
+                done.insert(done.end(), outputs.begin(), outputs.end());
+            }
         }
         // Header-only/interface targets still carry completion files through the graph.
         // Consumers may include generated headers from any transitive dependency.
@@ -134,6 +140,8 @@ namespace axlum
         for (std::size_t i = 0; i < original; ++i)
         {
             auto& a = graph.m_actions[i];
+            if (!targets.contains(a.m_owner))
+                continue; // Independently planned host actions.
             const auto& t = *targets.at(a.m_owner);
             for (const auto* deps : {&t.m_publicDependencies, &t.m_privateDependencies, &t.m_interfaceDependencies})
                 for (const auto& d : *deps)

@@ -62,8 +62,8 @@ including its modular binary groups. Multiple pre-actions execute in declaration
 order. Post-actions depend on the owner's artifact/runtime outputs and previous
 post-actions. Completion files participate in dependent action invalidation, including transitive HeaderOnly/interface dependencies. Host
 `@target/Tool` action tools include that tool's produced runtime/completion files.
-Cross builds must use an external host tool; building a second host graph inside
-the target graph is not implemented.
+Cross builds can mark generator executables with `hosttool(true)` to build their
+transitive closure in a separate host context; external host tools remain supported.
 
 Ninja executes actions only when inputs/commands change or outputs disappear.
 `restat` is enabled; tools should preserve unchanged output timestamps. Failures

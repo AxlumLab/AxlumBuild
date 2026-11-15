@@ -54,6 +54,7 @@ namespace axlum
         static std::string readAll(const fs::path& path);
         static std::string shortHash(std::string_view input);
         static bool isWithin(const fs::path& child, const fs::path& parent);
+        static fs::path dependencyPath(const fs::path& path);
         static void writeMsvcDepfile(const fs::path& jsonFile, const fs::path& depfile, const fs::path& object);
         static void writeEnvironment(const fs::path& file, const std::map<std::string, std::string>& environment);
         static std::map<std::string, std::string> readEnvironment(const fs::path& file);

@@ -19,7 +19,14 @@ namespace axlum
         PackageManager() = delete;
 
       public:
-        static void resolvePackages(Workspace& workspace, const Toolchain& toolchain, Configuration config, bool locked = false, bool restore = true);
+        static void resolvePackages(
+            Workspace& workspace,
+            const Toolchain& toolchain,
+            Configuration config,
+            bool locked = false,
+            bool restore = true,
+            const fs::path& storageRoot = {}
+        );
         static std::string
         packageInputsFingerprint(const Workspace& workspace, const Toolchain& toolchain, Configuration config, const fs::path& buildDirectory);
     };

@@ -16,6 +16,7 @@
 #include <rhodium/config/JsonModelWriter.hpp>
 #include <rhodium/config/LockFile.hpp>
 #include <rhodium/core/Environment.hpp>
+#include <rhodium/core/Path.hpp>
 #include <rhodium/core/WorkspaceLock.hpp>
 #include <rhodium/diagnostics/DiagnosticSink.hpp>
 #include <rhodium/package/GitFetcher.hpp>
@@ -100,7 +101,7 @@ namespace axlum
             data += "\n" + fs::absolute(path).lexically_normal().generic_string() + "=";
             data += fs::is_regular_file(path) ? FileSystem::shortHash(FileSystem::readAll(path)) : "missing";
         };
-        addFile(ws.m_root / "tpkg.lock.toml");
+        addFile(rhodium::Path::lockFile(ws.m_root));
         Diagnostics diagnostics;
         rhodium::DependencyOverrideSet overrides;
         if (!rhodium::DependencyOverrides::make(model, ws.m_root, {}, overrides, diagnostics))
@@ -147,8 +148,42 @@ namespace axlum
         return FileSystem::shortHash(data);
     }
 
-    void PackageManager::resolvePackages(Workspace& ws, const Toolchain& tc, Configuration config, bool locked, bool restore)
+    void PackageManager::resolvePackages(Workspace& ws, const Toolchain& tc, Configuration config, bool locked, bool restore, const fs::path& storageRoot)
     {
+        if (!storageRoot.empty() && ws.m_packageManifest)
+        {
+            auto isolated = ws;
+            isolated.m_packageManifest = std::make_shared<PackageManifest>(*ws.m_packageManifest);
+            auto& model = isolated.m_packageManifest->m_model;
+            Diagnostics diagnostics;
+            rhodium::DependencyOverrideSet overrides;
+            if (!rhodium::DependencyOverrides::make(model, ws.m_root, {}, overrides, diagnostics))
+                throw std::runtime_error("invalid host dependency overrides");
+            model.rootPackage.dependencyOverrides.clear();
+            for (const auto& [name, overrideValue] : overrides.overrides)
+            {
+                decltype(model.rootPackage.dependencyOverrides)::value_type value;
+                value.name = name;
+                value.path = overrideValue.path.generic_string();
+                model.rootPackage.dependencyOverrides.push_back(value);
+            }
+            for (auto& dep : model.rootPackage.dependencies)
+            {
+                if (dep.local || dep.sourceType == "local")
+                    dep.source = fs::absolute(ws.m_root / dep.source).generic_string();
+                for (auto& patch : dep.patches)
+                    patch = fs::absolute(ws.m_root / patch).generic_string();
+                if (!dep.cmake.toolchainFile.empty())
+                    dep.cmake.toolchainFile = fs::absolute(ws.m_root / dep.cmake.toolchainFile).generic_string();
+            }
+            isolated.m_root = fs::absolute(storageRoot);
+            fs::create_directories(isolated.m_root);
+            resolvePackages(isolated, tc, config, locked, restore);
+            ws.m_targets = std::move(isolated.m_targets);
+            if (isolated.m_features.contains("tool_paths"))
+                ws.m_features["tool_paths"] = isolated.m_features["tool_paths"];
+            return;
+        }
         if (!ws.m_packageManifest || ws.m_packageManifest->m_model.rootPackage.dependencies.empty())
             return;
         auto model = ws.m_packageManifest->m_model;
@@ -249,7 +284,7 @@ namespace axlum
         }
         rhodium::LockFile lockfile;
         rhodium::PackageArtifactResolver artifacts;
-        if (!rhodium::LockFile::read(ws.m_root / "tpkg.lock.toml", lockfile, diagnostics) ||
+        if (!rhodium::LockFile::read(rhodium::Path::lockFile(ws.m_root), lockfile, diagnostics) ||
             !artifacts.load(lockfile, ws.m_root, {configName, profile.id}, overrides, diagnostics))
             throw std::runtime_error("cannot read Rhodium package artifacts; run configure first");
         const auto originalCount = ws.m_targets.size();
@@ -261,6 +296,15 @@ namespace axlum
                 throw std::runtime_error("missing package artifact for " + dep.name + "; run configure first");
             if (!artifact->frameworks.empty() && tc.m_platform != "macos" && !tc.m_platform.starts_with("ios"))
                 throw std::runtime_error("package frameworks require an Apple toolchain: " + dep.name);
+            if (ws.m_features.contains("package_tool"))
+                for (const auto& tool : ws.m_features["package_tool"])
+                    if (tool.at("name") == dep.name)
+                    {
+                        const auto path = fs::absolute(artifact->root / tool.at("executable").get<std::string>()).lexically_normal();
+                        if (!FileSystem::isWithin(path, artifact->root) || !fs::is_regular_file(path))
+                            throw std::runtime_error("package tool missing/escapes artifact: " + path.string());
+                        ws.m_features["tool_paths"][dep.name] = path.generic_string();
+                    }
             Target target;
             target.m_name = packageTarget(dep.name);
             target.m_kind = TargetKind::HeaderOnly;

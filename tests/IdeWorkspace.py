@@ -246,7 +246,7 @@ with tempfile.TemporaryDirectory(prefix="axlum ide workspace ") as s_tmp:
             s_msbuild,
             s_idir / "vs" / "WorkspaceSuite.sln",
             "/t:Build",
-            "/p:Configuration=Debug-x64",
+            "/p:Configuration=Debug",
             "/p:Platform=x64",
             "/nologo",
             "/verbosity:minimal",

@@ -49,6 +49,9 @@ namespace axlum
                 result.*member = module.*member;
         if (!module.m_sanitizers.empty())
             result.m_sanitizers = module.m_sanitizers;
+        result.m_forceIncludes.insert(result.m_forceIncludes.end(), module.m_forceIncludes.begin(), module.m_forceIncludes.end());
+        if (!module.m_charset.empty())
+            result.m_charset = module.m_charset;
         result.m_cFlags.insert(result.m_cFlags.end(), module.m_cFlags.begin(), module.m_cFlags.end());
         result.m_cxxFlags.insert(result.m_cxxFlags.end(), module.m_cxxFlags.begin(), module.m_cxxFlags.end());
         return result;
@@ -300,8 +303,21 @@ namespace axlum
                 );
             if (c.m_lto.value_or(false))
                 flags.push_back("/LTCG");
-            if (!t.m_link.m_subsystem.empty())
+            if (!t.m_link.m_subsystem.empty() || t.m_kind == TargetKind::Executable)
                 flags.push_back(t.m_link.m_subsystem == "windows" ? "/SUBSYSTEM:WINDOWS" : "/SUBSYSTEM:CONSOLE");
+            if (t.m_kind == TargetKind::Executable || t.m_kind == TargetKind::SharedLibrary)
+                for (const auto* lib :
+                     {"kernel32.lib",
+                      "user32.lib",
+                      "gdi32.lib",
+                      "winspool.lib",
+                      "shell32.lib",
+                      "ole32.lib",
+                      "oleaut32.lib",
+                      "uuid.lib",
+                      "comdlg32.lib",
+                      "advapi32.lib"})
+                    flags.push_back(lib);
             if (!t.m_link.m_entryPoint.empty())
                 flags.push_back("/ENTRY:" + t.m_link.m_entryPoint);
             for (const auto& dll : t.m_link.m_delayLoadLibraries)

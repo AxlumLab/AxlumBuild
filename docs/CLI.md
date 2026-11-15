@@ -16,6 +16,9 @@ axlum-build doctor --workspace . --json
 `configure`, `build`, `install`, `-S/-B`, `--build <directory>` and
 `--install <directory>` follow CMake's command shape. The generator is Ninja;
 arbitrary CMake generators, scripts and `-D` variables are not interpreted.
+Project options use repeatable `--option NAME=VALUE`; `options --json` lists their
+types and effective values. `test -B build [-R pattern] [-L label] [--no-build]`
+runs declared tests through CTest. See DSL.md for generation and host tools.
 Build directories retain a single configuration; `--config` on an existing build
 validates that configuration. `--parallel` aliases `--jobs`; `--clean-first`
 uses the existing rebuild flow.
@@ -48,6 +51,8 @@ target("Library")
 ```
 
 Header globs preserve paths relative to `installheaderbase` (default `include`).
+Explicit generated headers and their `installheaderbase` can use `@build/` paths;
+declare the generating target as a dependency so a targeted build prepares them.
 `installbindir`, `installlibdir`, `installincludedir`, `installdatadir` customize
 relative destinations. `installable(false)` suppresses that target's installation.
 Runtime dependencies remain required by installable consumers.

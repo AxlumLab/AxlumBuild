@@ -1,0 +1,27 @@
+name: VS Code extension
+on:
+  push:
+    paths: ['editors/vscode/**', '.github/workflows/vscode-extension.yml']
+  pull_request:
+    paths: ['editors/vscode/**', '.github/workflows/vscode-extension.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test extension model and check JavaScript
+        run: |
+          node --test editors/vscode/test/*.test.js
+          for source in editors/vscode/src/*.js; do node --check "$source"; done
+      - name: Package local VSIX
+        run: python3 editors/vscode/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axlum-vscode
+          path: editors/vscode/dist/*.vsix
+          if-no-files-found: error
