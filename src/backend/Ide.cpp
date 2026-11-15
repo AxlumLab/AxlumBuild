@@ -835,7 +835,7 @@ namespace axlum
             auto names = collectTargets(contexts);
             std::erase_if(
                 names,
-                [&](const auto& name)
+                [&](const std::string& name)
                 {
                     for (const auto& c : contexts)
                         if (c.m_graph.m_targetKinds.contains(name) && c.m_graph.m_targetKinds.at(name) == TargetKind::DotNetProject)

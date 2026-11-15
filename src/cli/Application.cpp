@@ -359,7 +359,7 @@ namespace axlum
     void Application::configureCli(CLI::App& app, Arguments& options)
     {
         app.require_subcommand(1, 1);
-        app.set_version_flag("-v,--version", "AxlumBuild 0.2.0");
+        app.set_version_flag("-v,--version", "AxlumBuild 0.2.1");
         app.set_help_all_flag("--help-all", "Show all commands and their options");
         auto* configure = app.add_subcommand("configure", "Load a manifest and generate Ninja + compile_commands.json");
         configure->add_option("-f,--file", options.m_file, "Lua or legacy TOML manifest")->check(CLI::ExistingFile)->capture_default_str();
