@@ -298,9 +298,10 @@ paths, relative to the manifest's directory. Its entries must remain within that
 directory. A generator must write its manifest and files atomically as appropriate
 and preserve timestamps for unchanged content. `generatedsources` selects output
 extensions from that producer. Configure describes generator and consumer rules
-without compiling workspace targets or running generators. On build (including
-direct Ninja), the graph check executes the selected targets' generator dependency
-closure, then reloads changed output manifests before compiling consumers. Missing
+without compiling workspace targets or running generators. AxlumBuild executes the
+selected targets' generator dependency closure and reloads changed output manifests
+before starting the main Ninja process. Direct Ninja builds discover these outputs
+during their graph check using separate bootstrap logs. Missing
 manifests are valid before the first build. Added and removed generated sources
 are reflected in the compilation database during that same build. Unrelated
 generators remain unbuilt. Generator failures stop the build; malformed, escaping,
@@ -311,9 +312,9 @@ not an untracked glob over an arbitrary generated directory.
 `hosttool(true)` builds an executable and its transitive dependency closure with
 the host platform/architecture/toolchain under `<B>/host`. Native declarations are
 reevaluated for that host context, including platform conditions and packages.
-Configure plans the host graph with its own environment. Host discovery and the
-main build share one Ninja dependency database and identical action environment
-paths, so alternating between them does not invalidate the same host objects. Build first discovers
+Configure plans the host graph with its own environment. Under AxlumBuild, host
+discovery and the main build access one Ninja dependency database in sequence
+and use identical action environment paths, preserving the same host objects. Build first discovers
 any dynamic sources needed by selected host tools, then compiles those tools when
 their consumers need them. Cross-toolchain package storage is isolated from target
 storage. Static/shared dependencies can exist in both contexts without sharing

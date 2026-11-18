@@ -21,10 +21,13 @@ with tempfile.TemporaryDirectory(prefix="axlum incremental ide ") as temporary:
     source.mkdir()
     (source / "Main.cpp").write_text('int main() { return 0; }\n')
     (source / "Host.cpp").write_text('int main() { return 0; }\n')
+    (source / "GeneratorTool.cpp").write_text('int main() { return 0; }\n')
+    (source / "GeneratorInput.hpp").write_text("#define EXIT_CODE 0\n")
     (source / "GeneratedApp.cpp").write_text('int generated(); int main() { return generated() == 42 ? 0 : 1; }\n')
     (source / "choice.txt").write_text("One")
     (source / "Generate.py").write_text(
-        "import json,sys\nfrom pathlib import Path\n"
+        "import json,subprocess,sys\nfrom pathlib import Path\n"
+        "subprocess.check_call([sys.argv[3]])\n"
         "root=Path(sys.argv[1]); output=Path(sys.argv[2]); output.mkdir(parents=True,exist_ok=True)\n"
         "name=(root/'choice.txt').read_text()+'.cpp'\n"
         "for file,text in {name:'int generated(){return 42;}', 'Outputs.json':json.dumps([name])}.items():\n"
@@ -35,8 +38,10 @@ with tempfile.TemporaryDirectory(prefix="axlum incremental ide ") as temporary:
         'workspace("Incremental")\nconfiguration("Debug")\n'
         'target("Plain") kind("ConsoleApp") files("Main.cpp")\n'
         'target("UnrelatedHost") kind("ConsoleApp") hosttool(true) files("Host.cpp")\n'
+        'target("GeneratorTool") kind("ConsoleApp") hosttool(true) files("GeneratorTool.cpp")\n'
         'target("Generate") kind("Codegen") tool(' + json.dumps(sys.executable.replace("\\", "/")) + ')\n'
-        'args({"${workspace}/Generate.py","${workspace}","${build}/generated"})\n'
+        'args({"${workspace}/Generate.py","${workspace}","${build}/generated",targetfile("GeneratorTool")})\n'
+        'private_deps("GeneratorTool")\n'
         'inputs({"Generate.py","choice.txt"}) outputmanifest("generated/Outputs.json")\n'
         'target("GeneratedApp") kind("ConsoleApp") files("GeneratedApp.cpp") generatedsources("Generate")\n'
     )
@@ -69,13 +74,23 @@ with tempfile.TemporaryDirectory(prefix="axlum incremental ide ") as temporary:
     assert "Two.cpp" in database and "One.cpp" not in database
     run(cli, "run", "-B", build, "GeneratedApp")
     assert "no work to do" in run(cli, "build", "-B", build, "-t", "GeneratedApp")
+    # Rebuilding a native generator updates Ninja's dependency log even when
+    # the generator returns the same manifest and leaves its outputs alone.
+    (source / "GeneratorTool.cpp").write_text('#include "GeneratorInput.hpp"\nint main() { return EXIT_CODE; }\n')
+    output = run(cli, "build", "-B", build, "-t", "GeneratedApp")
+    assert output.count("Compile GeneratorTool:GeneratorTool.cpp") == 1, output
+    output = run(cli, "build", "-B", build, "-t", "GeneratedApp")
+    assert "no work to do" in output and "premature end of file" not in output, output
+    assert "Compile " not in output and "Link " not in output and "Generate " not in output, output
     (source / "choice.txt").write_text("Three")
     run(cli, "build", "-B", build, "-t", "GeneratedApp")
     assert "Three.cpp" in (build / "compile_commands.json").read_text()
     assert not (build / "generated/Two.cpp").exists()
     (source / "Host.cpp").write_text('int main() { return 0; }\n')
     ide = root / "ide"
-    run(cli, "ide", "-f", manifest, "-B", root / "ide-builds", "-o", ide, "--format", "vs")
+    ide_builds = root / "ide-builds"
+    run(cli, "configure", "-f", manifest, "-B", ide_builds / "Debug-x64", "--config", "Debug")
+    run(cli, "ide", "-B", ide_builds, "-o", ide, "--format", "vs")
     solution = (ide / "vs/Incremental.sln").read_text()
     assert "VisualStudioVersion = 17." in solution
     assert "MinimumVisualStudioVersion = 10.0.40219.1" in solution

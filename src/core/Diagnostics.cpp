@@ -349,6 +349,21 @@ namespace axlum
             }
             if (options.m_jobs)
                 environment["AXLUM_BUILD_JOBS"] = std::to_string(options.m_jobs);
+            if (options.m_prepareBuild && !options.m_dryRun)
+            {
+                // Prepare dynamic sources before Ninja opens its build and dependency logs.
+                try
+                {
+                    options.m_prepareBuild(session, directory, ninja, targets, environment);
+                }
+                catch (const std::exception& error)
+                {
+                    session.recordFailure(error.what());
+                    session.finish(1);
+                    return 1;
+                }
+                environment["AXLUM_BUILD_PREPARED"] = directory.string();
+            }
             rc = session.run("build", args, {}, environment);
         }
         session.finish(rc);

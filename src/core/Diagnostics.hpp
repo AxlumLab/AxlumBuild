@@ -9,14 +9,24 @@
 #include "core/Process.hpp"
 #include <chrono>
 #include <fstream>
+#include <functional>
 
 namespace axlum
 {
+    class CommandSession;
+
     struct ExecutionOptions
     {
         int m_jobs = 0;
         bool m_verbose = false, m_explain = false, m_timing = false, m_dryRun = false;
         fs::path m_logfile, m_report, m_trace;
+        std::function<void(
+            CommandSession&,
+            const fs::path&,
+            const std::string&,
+            const std::vector<std::string>&,
+            const std::map<std::string, std::string>&
+        )> m_prepareBuild;
     };
 
     class CommandSession

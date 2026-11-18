@@ -28,6 +28,7 @@
 #include <iostream>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -274,11 +275,12 @@ namespace axlum
             );
         }
 
-        // Called only from Ninja's build-time graph check, never from configure.
         bool prepareDynamicSources(
             const fs::path& build,
             const std::string& ninja,
-            const std::vector<std::string>* requested = nullptr,
+            const std::vector<std::string>& roots,
+            const std::map<std::string, std::string>& environment,
+            CommandSession* session,
             const fs::path& executionDirectory = {}
         )
         {
@@ -298,8 +300,6 @@ namespace axlum
                 for (const auto& dependency : dependencies.at(name))
                     visit(dependency.get<std::string>());
             };
-            const auto* selected = std::getenv("AXLUM_BUILD_TARGETS");
-            auto roots = requested ? *requested : selected && *selected ? Json::parse(selected).get<std::vector<std::string>>() : std::vector<std::string>{};
             if (roots.empty() || std::find(roots.begin(), roots.end(), "all") != roots.end())
                 for (const auto& [name, value] : dependencies.items())
                     visit(name);
@@ -312,32 +312,31 @@ namespace axlum
                     hostRoots.push_back(name.get<std::string>());
             // Host generators may themselves consume dynamically discovered sources.
             // Replan those consumers before executing target-context generators.
-            if (!hostRoots.empty() && prepareDynamicSources(build / "host", ninja, &hostRoots, build))
+            if (!hostRoots.empty() && prepareDynamicSources(build / "host", ninja, hostRoots, environment, session, build))
                 return true;
             const auto executionRoot = executionDirectory.empty() ? build : executionDirectory;
-            std::vector<std::string> command = {ninja, "-C", executionRoot.string(), "-f", requested ? "host-generators.ninja" : "generators.ninja"};
-            if (const auto* jobs = std::getenv("AXLUM_BUILD_JOBS"); jobs && *jobs)
-                command.insert(command.end(), {"-j", jobs});
-            else
-                command.insert(command.end(), {"-j", "8"});
-            const auto start = command.size();
+            std::vector<std::string> targets;
             for (const auto& [root, manifests] : dynamic.at("manifests").items())
                 if (closure.contains(root))
-                    command.push_back(root);
-            if (command.size() == start)
+                    targets.push_back(root);
+            if (targets.empty())
                 return false;
-            std::string output;
-            const auto status = Process::run(
-                command,
-                {},
-                FileSystem::readEnvironment(executionRoot / "axlum.environment.json"),
-                [&](std::string_view text)
-                {
-                    output += text;
-                }
-            );
-            if (status != 0 || output.find("no work to do") == std::string::npos)
-                std::cout << output;
+            std::string manifest = executionDirectory.empty() ? "generators.ninja" : "host-generators.ninja";
+            if (!session)
+            {
+                // A direct Ninja invocation already has the main logs open.
+                const auto bootstrap = "bootstrap-" + manifest;
+                FileSystem::writeIfChanged(executionRoot / bootstrap, "builddir = .axlum-bootstrap\ninclude " + manifest + "\n");
+                manifest = bootstrap;
+            }
+            const auto jobs = environment.find("AXLUM_BUILD_JOBS");
+            std::vector<std::string> command = {ninja, "-C", executionRoot.string(), "-f", manifest, "-j", jobs == environment.end() ? "8" : jobs->second};
+            command.insert(command.end(), targets.begin(), targets.end());
+            auto generatorEnvironment = FileSystem::readEnvironment(executionRoot / "axlum.environment.json");
+            for (const auto& [name, value] : environment)
+                generatorEnvironment[name] = value;
+            const auto status = session ? session->run("prepare dynamic sources", command, {}, generatorEnvironment)
+                                        : Process::run(command, {}, generatorEnvironment, [](std::string_view output) { std::cout << output; });
             if (status != 0)
                 throw std::runtime_error("dynamic source generation failed");
             for (const auto& [root, manifests] : dynamic.at("manifests").items())
@@ -1214,9 +1213,22 @@ namespace axlum
             if (args.size() == 3 && args[0] == "__refresh" && args[1] == "-B")
             {
                 const auto directory = fs::absolute(args[2]).lexically_normal();
+                if (const auto* prepared = std::getenv("AXLUM_BUILD_PREPARED"); prepared && *prepared)
+                {
+                    std::error_code error;
+                    if (fs::equivalent(directory, fs::path(prepared), error))
+                        return 0;
+                }
                 if (configureInputsChanged(directory))
                     throw std::runtime_error("configuration inputs changed; run configure -B " + directory.string());
-                while (prepareDynamicSources(directory, readState(directory).at("ninja")))
+                std::vector<std::string> targets;
+                if (const auto* selected = std::getenv("AXLUM_BUILD_TARGETS"); selected && *selected)
+                    targets = Json::parse(selected).get<std::vector<std::string>>();
+                std::map<std::string, std::string> environment;
+                if (const auto* jobs = std::getenv("AXLUM_BUILD_JOBS"); jobs && *jobs)
+                    environment["AXLUM_BUILD_JOBS"] = jobs;
+                const auto ninja = readState(directory).at("ninja");
+                while (prepareDynamicSources(directory, ninja, targets, environment, nullptr))
                     refresh(directory, currentExecutable(argv[0]));
                 return 0;
             }
@@ -1307,6 +1319,19 @@ namespace axlum
             {
                 return app.exit(error);
             }
+            opt.m_execution.m_prepareBuild = [this, self = currentExecutable(argv[0])](
+                CommandSession& session,
+                const fs::path& directory,
+                const std::string& ninja,
+                const std::vector<std::string>& targets,
+                const std::map<std::string, std::string>& environment
+            )
+            {
+                if (configureInputsChanged(directory))
+                    throw std::runtime_error("configuration inputs changed; run configure -B " + directory.string());
+                while (prepareDynamicSources(directory, ninja, targets, environment, &session))
+                    refresh(directory, self);
+            };
             if (opt.m_command == "doctor")
                 return doctor(opt);
             if (opt.m_command == "ide" || opt.m_command == "matrix")
